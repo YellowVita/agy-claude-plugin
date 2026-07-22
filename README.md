@@ -125,6 +125,12 @@ Use `--` before task text that begins with a dash.
 
 Per-workspace job records are stored below `$CLAUDE_PLUGIN_DATA/state` when Claude Code provides it. Otherwise the runtime uses an OS temporary directory. Job metadata, stdout, stderr, and lifecycle logs are private files; the most recent 50 finished jobs are retained.
 
+## Acknowledgements
+
+This plugin's command, thin-agent, companion-runtime, and local job-tracking architecture is adapted in part from the [OpenAI Codex Plugin for Claude Code](https://github.com/openai/codex-plugin-cc), licensed under the Apache License 2.0. See [NOTICE](NOTICE) for attribution details.
+
+This is an independent community project. It is not affiliated with or endorsed by OpenAI, Google, or the Antigravity project.
+
 ## Development
 
 Tests use a fake `agy` executable and never invoke the real CLI:

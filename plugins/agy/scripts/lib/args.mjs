@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
+// Portions adapted from the OpenAI Codex Plugin for Claude Code:
+// https://github.com/openai/codex-plugin-cc
+// Copyright 2026 OpenAI
+// Modifications Copyright 2026 Antigravity Plugin Contributors.
+
 function splitRawAtDelimiter(raw) {
   let quote = null;
   let escaping = false;

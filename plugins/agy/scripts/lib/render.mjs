@@ -37,7 +37,8 @@ export function renderSetup(result) {
     `Executable: ${result.binary}`,
     `Version: ${result.version}`,
     "Authentication: not probeable through a noninteractive agy subcommand.",
-    "If the first task requests authentication, run `! agy` interactively and retry.",
+    "If authentication is required, run `agy` in a terminal with an interactive TTY and retry.",
+    "If Claude Code's `! agy` reports `/dev/tty` unavailable, run `agy` in a separate terminal window.",
     ""
   ].join("\n");
 }

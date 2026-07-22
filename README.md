@@ -8,19 +8,32 @@ This plugin delegates tasks from Claude Code to the locally installed Antigravit
 - `agy` 1.1.5 or a compatible release on `PATH`
 - Antigravity authentication completed interactively when required
 
-To authenticate, run this directly in Claude Code:
+To authenticate, run `agy` in a terminal with an interactive TTY:
 
-```text
-! agy
+```bash
+agy
 ```
+
+If Claude Code's `! agy` reports that `/dev/tty` is unavailable, run `agy` in a separate WSL, Windows Terminal, or other interactive terminal window.
 
 ## Installation
 
-Add the GitHub marketplace and install the plugin from inside Claude Code:
+First, add the GitHub marketplace from inside Claude Code:
 
 ```text
 /plugin marketplace add YellowVita/agy-claude-plugin
+```
+
+Then install the plugin:
+
+```text
 /plugin install agy@antigravity-agy
+```
+
+Apply the installed plugin:
+
+```text
+/reload-plugins
 ```
 
 Verify the installation with:

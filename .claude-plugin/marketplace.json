@@ -5,13 +5,13 @@
   },
   "metadata": {
     "description": "Use the Antigravity agy CLI from Claude Code.",
-    "version": "0.1.0"
+    "version": "0.1.1"
   },
   "plugins": [
     {
       "name": "agy",
       "description": "Delegate safe planning, explicit edits, and confirmed full-access tasks to Antigravity.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "source": "./plugins/agy"
     }
   ]

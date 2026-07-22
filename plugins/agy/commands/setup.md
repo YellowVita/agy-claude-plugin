@@ -11,4 +11,4 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" setup
 ```
 
 Present the complete setup output to the user without adding installation commands.
-If authentication has not been completed, preserve the guidance to run `! agy` interactively.
+If authentication has not been completed, preserve the guidance to run `agy` in a terminal with an interactive TTY. Do not imply that Claude Code's `! agy` always provides a TTY; if it reports `/dev/tty` unavailable, direct the user to a separate terminal window.

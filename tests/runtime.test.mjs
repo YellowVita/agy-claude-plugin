@@ -29,7 +29,9 @@ test("setup reports the resolved fake agy executable and version", () => {
   assert.match(result.stdout, /Antigravity Setup/);
   assert.match(result.stdout, new RegExp(fakeAgy.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(result.stdout, /agy 1\.1\.5-fake/);
-  assert.match(result.stdout, /! agy/);
+  assert.match(result.stdout, /interactive TTY/);
+  assert.match(result.stdout, /\/dev\/tty/);
+  assert.match(result.stdout, /separate terminal window/);
 });
 
 test("safe mode safely forwards the exact prompt with shell disabled semantics", () => {

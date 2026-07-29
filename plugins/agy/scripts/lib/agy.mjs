@@ -2,12 +2,42 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
-import { formatCommandFailure, runCommand } from "./process.mjs";
+import { formatCommandFailure, runCommand, runCommandStreaming } from "./process.mjs";
+import {
+  createStreamJsonCollector,
+  createStructuredFailureOutput,
+  parseStructuredOutput,
+  validateOutputFormat
+} from "./structured-output.mjs";
 import { resolveDirectory } from "./workspace.mjs";
 
 const DEFAULT_PRINT_TIMEOUT = "5m0s";
+const DEFAULT_OUTPUT_FORMAT = "json";
 const OUTER_TIMEOUT_GRACE_MS = 30_000;
 const VALID_EFFORTS = new Set(["low", "medium", "high"]);
+const MINIMUM_AGY_VERSION = [1, 1, 8];
+const REQUIRED_HELP_FEATURES = [
+  { name: "json output", pattern: /--output-format[\s\S]*(?:json|stream-json)/i },
+  { name: "stream-json output", pattern: /stream-json/i },
+  { name: "JSON schema validation", pattern: /--json-schema/i }
+];
+
+function isSupportedAgyVersion(value) {
+  const match = String(value).match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) {
+    return false;
+  }
+  const actual = [Number(match[1]), Number(match[2]), Number(match[3])];
+  for (let index = 0; index < MINIMUM_AGY_VERSION.length; index += 1) {
+    if (actual[index] > MINIMUM_AGY_VERSION[index]) {
+      return true;
+    }
+    if (actual[index] < MINIMUM_AGY_VERSION[index]) {
+      return false;
+    }
+  }
+  return true;
+}
 
 function executableNames(platform) {
   return platform === "win32" ? ["agy.exe", "agy.cmd", "agy.bat", "agy"] : ["agy"];
@@ -84,9 +114,47 @@ function normalizeExtraDirectories(cwd, values = []) {
   return values.map((value) => resolveDirectory(path.resolve(cwd, value)));
 }
 
+function normalizeJsonSchema(cwd, value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const source = String(value).trim();
+  if (!source) {
+    throw new Error("JSON schema cannot be empty.");
+  }
+  if (source.startsWith("{") || source.startsWith("[")) {
+    try {
+      JSON.parse(source);
+    } catch (error) {
+      throw new Error(`Invalid inline JSON schema: ${error.message}`);
+    }
+    return source;
+  }
+
+  const schemaPath = path.resolve(cwd, source);
+  let contents;
+  try {
+    const stat = fs.statSync(schemaPath);
+    if (!stat.isFile()) {
+      throw new Error("not a file");
+    }
+    contents = fs.readFileSync(schemaPath, "utf8");
+  } catch (error) {
+    throw new Error(`JSON schema file is not readable: ${schemaPath} (${error.message})`);
+  }
+  try {
+    JSON.parse(contents);
+  } catch (error) {
+    throw new Error(`JSON schema file is invalid JSON: ${schemaPath} (${error.message})`);
+  }
+  return schemaPath;
+}
+
 export function buildAgyArgs(request) {
   const printTimeout = request.printTimeout ?? DEFAULT_PRINT_TIMEOUT;
   parseDurationMs(printTimeout);
+  const outputFormat = validateOutputFormat(request.outputFormat ?? DEFAULT_OUTPUT_FORMAT);
+  const jsonSchema = normalizeJsonSchema(request.cwd, request.jsonSchema);
 
   if (!new Set(["safe", "write", "full-access"]).has(request.mode)) {
     throw new Error(`Unknown Antigravity permission mode: ${request.mode}`);
@@ -103,8 +171,14 @@ export function buildAgyArgs(request) {
   if (request.project && request.newProject) {
     throw new Error("Choose either --project or --new-project, not both.");
   }
+  if (jsonSchema && outputFormat === "text") {
+    throw new Error("--json-schema requires --output-format json or stream-json.");
+  }
 
-  const args = ["--print-timeout", printTimeout];
+  const args = ["--print-timeout", printTimeout, "--output-format", outputFormat];
+  if (jsonSchema) {
+    args.push("--json-schema", jsonSchema);
+  }
   if (request.mode === "safe") {
     args.push("--mode", "plan", "--sandbox");
   } else if (request.mode === "write") {
@@ -156,11 +230,43 @@ export function probeAgy(options = {}) {
         detail: formatCommandFailure(result)
       };
     }
-    return {
-      available: true,
-      binary,
-      version: result.stdout.trim() || result.stderr.trim() || "unknown"
-    };
+    const version = result.stdout.trim() || result.stderr.trim() || "unknown";
+    if (!isSupportedAgyVersion(version)) {
+      return {
+        available: false,
+        binary,
+        detail: `agy 1.1.8 or newer is required; found ${version}.`
+      };
+    }
+    const help = runCommand(binary, ["--help"], {
+      env: options.env ?? process.env,
+      timeout: 10_000
+    });
+    if (help.error || help.status !== 0) {
+      return {
+        available: false,
+        binary,
+        version,
+        detail: `Could not inspect required agy features: ${formatCommandFailure(help)}`
+      };
+    }
+    const helpText = `${help.stdout}\n${help.stderr}`;
+    const capabilities = Object.fromEntries(
+      REQUIRED_HELP_FEATURES.map((feature) => [feature.name, feature.pattern.test(helpText)])
+    );
+    const missing = Object.entries(capabilities)
+      .filter(([, supported]) => !supported)
+      .map(([name]) => name);
+    if (missing.length) {
+      return {
+        available: false,
+        binary,
+        version,
+        capabilities,
+        detail: `The installed agy lacks required features: ${missing.join(", ")}. Update agy and retry.`
+      };
+    }
+    return { available: true, binary, version, capabilities };
   } catch (error) {
     return {
       available: false,
@@ -170,25 +276,110 @@ export function probeAgy(options = {}) {
   }
 }
 
-export function executeAgyTask(request, options = {}) {
+export async function executeAgyTask(request, options = {}) {
   const env = options.env ?? process.env;
   const binary = resolveAgyBinary({ env });
   const args = buildAgyArgs(request);
+  const outputFormat = validateOutputFormat(request.outputFormat ?? DEFAULT_OUTPUT_FORMAT);
   const printTimeoutMs = parseDurationMs(request.printTimeout ?? DEFAULT_PRINT_TIMEOUT);
-  const result = runCommand(binary, args, {
+  let stderrTail = "";
+  const appendStderrTail = (chunk) => {
+    stderrTail += chunk;
+    if (Buffer.byteLength(stderrTail, "utf8") > 64 * 1024) {
+      stderrTail = stderrTail.slice(-64 * 1024);
+    }
+    options.onStderr?.(chunk);
+  };
+  const streamCollector =
+    outputFormat === "stream-json"
+      ? createStreamJsonCollector({
+          deferTerminal: true,
+          onEventLine: (line) => options.onStdout?.(line),
+          onProgress: options.onProgress
+        })
+      : null;
+  const result = await runCommandStreaming(binary, args, {
     cwd: request.cwd,
     env,
     timeout: printTimeoutMs + OUTER_TIMEOUT_GRACE_MS,
-    maxBuffer: 16 * 1024 * 1024
+    maxBuffer: 32 * 1024 * 1024,
+    captureStdout: outputFormat !== "stream-json",
+    captureStderr: outputFormat !== "stream-json",
+    onStdout: streamCollector ? (chunk) => streamCollector.push(chunk) : options.onStdout,
+    onStderr: outputFormat === "stream-json" ? appendStderrTail : options.onStderr
   });
 
-  const errorMessage = result.error ? `agy failed to start or timed out: ${result.error.message}` : null;
+  let errorMessage = result.error ? `agy execution failed: ${result.error.message}` : null;
+  let structured = null;
+  let stdout = result.stdout;
+  const stderr = outputFormat === "stream-json" ? stderrTail : result.stderr;
+
+  if (outputFormat === "stream-json") {
+    try {
+      structured = streamCollector.finish();
+    } catch (error) {
+      errorMessage ??= error instanceof Error ? error.message : String(error);
+    }
+    if (structured?.remoteStatus && structured.remoteStatus !== "SUCCESS") {
+      errorMessage ??= `agy returned terminal status ${structured.remoteStatus}.`;
+    }
+    if (result.status !== 0 && !errorMessage) {
+      errorMessage = `agy exited with status ${result.status ?? "unknown"}${result.signal ? ` (${result.signal})` : ""}.`;
+    }
+    let terminalOutput = streamCollector.terminalLine();
+    if (errorMessage && (!structured || structured.remoteStatus === "SUCCESS")) {
+      terminalOutput = createStructuredFailureOutput("stream-json", {
+        message: errorMessage,
+        conversationId: streamCollector.snapshot().conversationId,
+        exitStatus: result.status,
+        signal: result.signal
+      });
+      structured = parseStructuredOutput("stream-json", terminalOutput);
+    }
+    if (terminalOutput) {
+      options.onStdout?.(terminalOutput);
+    }
+  } else if (outputFormat === "json") {
+    let parseError = null;
+    if (stdout.trim()) {
+      try {
+        structured = parseStructuredOutput("json", stdout);
+      } catch (error) {
+        parseError = error instanceof Error ? error : new Error(String(error));
+      }
+    } else {
+      parseError = new Error("agy returned empty JSON output.");
+    }
+    if (result.status === 0 && parseError) {
+      errorMessage ??= parseError.message;
+    }
+    if (structured?.remoteStatus && structured.remoteStatus !== "SUCCESS") {
+      errorMessage ??= `agy returned terminal status ${structured.remoteStatus}.`;
+    }
+    if (request.outputFormatExplicit && (parseError || !stdout.trim())) {
+      errorMessage ??=
+        result.status !== 0
+          ? `agy exited with status ${result.status ?? "unknown"}${result.signal ? ` (${result.signal})` : ""}.`
+          : parseError?.message;
+      stdout = createStructuredFailureOutput("json", {
+        message: errorMessage,
+        exitStatus: result.status,
+        signal: result.signal,
+        rawOutput: result.stdout
+      });
+      structured = parseStructuredOutput("json", stdout);
+    }
+  }
+
   return {
     binary,
-    exitStatus: result.status ?? 1,
+    exitStatus: result.status && result.status !== 0 ? result.status : errorMessage ? 1 : (result.status ?? 1),
     signal: result.signal,
-    stdout: result.stdout,
-    stderr: result.stderr,
-    errorMessage
+    stdout,
+    stderr,
+    errorMessage,
+    structured,
+    stdoutPersisted: outputFormat === "stream-json",
+    stderrPersisted: outputFormat === "stream-json" && Boolean(options.onStderr)
   };
 }

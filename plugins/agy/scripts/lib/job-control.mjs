@@ -5,12 +5,32 @@
 // Modifications Copyright 2026 Antigravity Plugin Contributors.
 
 import { isProcessRunning } from "./process.mjs";
-import { listJobs, readJob, removeRequest, updateJob } from "./state.mjs";
+import {
+  listJobs,
+  readJob,
+  removeRequest,
+  replacePrivateNdjsonTerminal,
+  updateJob,
+  writePrivateText
+} from "./state.mjs";
+import { createStructuredFailureOutput } from "./structured-output.mjs";
 import { nowIso } from "./tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
 const FINISHED_STATUSES = new Set(["completed", "failed", "cancelled"]);
+
+function persistStructuredFailure(job, message) {
+  if (!job.outputFormatExplicit || !["json", "stream-json"].includes(job.outputFormat)) {
+    return;
+  }
+  const failureOutput = createStructuredFailureOutput(job.outputFormat, { message });
+  if (job.outputFormat === "stream-json") {
+    replacePrivateNdjsonTerminal(job.stdoutFile, failureOutput);
+  } else {
+    writePrivateText(job.stdoutFile, failureOutput);
+  }
+}
 
 export function sortJobsNewestFirst(jobs) {
   return [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
@@ -29,6 +49,8 @@ function refreshStaleJobs(workspaceRoot) {
     }
 
     removeRequest(workspaceRoot, job.id);
+    const errorMessage = "The local worker exited without recording a final result.";
+    persistStructuredFailure(job, errorMessage);
     refreshed.push(
       updateJob(workspaceRoot, job.id, {
         status: "failed",
@@ -36,7 +58,7 @@ function refreshStaleJobs(workspaceRoot) {
         pid: null,
         completedAt: nowIso(),
         exitStatus: 1,
-        errorMessage: "The local worker exited without recording a final result."
+        errorMessage
       })
     );
   }
@@ -62,12 +84,16 @@ function matchJobReference(jobs, reference, predicate = () => true) {
   return null;
 }
 
+function isUserJob(job) {
+  return !job.stopGate;
+}
+
 export function buildStatusSnapshot(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const jobs = sortJobsNewestFirst(refreshStaleJobs(workspaceRoot));
   return {
     workspaceRoot,
-    jobs: options.all ? jobs : jobs.slice(0, options.maxJobs ?? 8)
+    jobs: options.all ? jobs : jobs.filter(isUserJob).slice(0, options.maxJobs ?? 8)
   };
 }
 
@@ -114,11 +140,23 @@ export function resolveResultJob(cwd, reference) {
     return { workspaceRoot, job: selected };
   }
 
-  const selected = jobs.find((job) => FINISHED_STATUSES.has(job.status));
+  const selected = jobs.find((job) => isUserJob(job) && FINISHED_STATUSES.has(job.status));
   if (!selected) {
     throw new Error("No finished Antigravity jobs are recorded for this workspace.");
   }
   return { workspaceRoot, job: selected };
+}
+
+export function resolveLatestConversationJob(cwd) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const jobs = sortJobsNewestFirst(refreshStaleJobs(workspaceRoot));
+  const job = jobs.find(
+    (candidate) =>
+      isUserJob(candidate) &&
+      !ACTIVE_STATUSES.has(candidate.status) &&
+      candidate.conversationId
+  );
+  return job ? { workspaceRoot, job } : null;
 }
 
 export function resolveCancelableJob(cwd, reference) {

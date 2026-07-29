@@ -8,15 +8,23 @@
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { executeAgyTask, probeAgy, resolveAgyBinary } from "./lib/agy.mjs";
+import { executeAgyTask, probeAgy } from "./lib/agy.mjs";
 import { parseCommandArgs } from "./lib/args.mjs";
+import {
+  assertRepositorySnapshot,
+  buildReviewPrompt,
+  resolveReviewTarget,
+  resolveTurnReviewTarget
+} from "./lib/git-review.mjs";
 import {
   buildSingleJobSnapshot,
   buildStatusSnapshot,
   readCurrentJob,
+  resolveLatestConversationJob,
   resolveCancelableJob,
   resolveResultJob,
   waitForJob
@@ -25,6 +33,7 @@ import { terminateProcessTree } from "./lib/process.mjs";
 import {
   renderCancel,
   renderExecution,
+  renderFailure,
   renderQueued,
   renderSetup,
   renderSingleStatus,
@@ -33,26 +42,37 @@ import {
 } from "./lib/render.mjs";
 import {
   appendLog,
+  ensureStateDir,
   pruneFinishedJobs,
+  readConfig,
   readJob,
   readPrivateText,
   readRequest,
+  readTurnSnapshot,
   removeRequest,
+  replacePrivateNdjsonTerminal,
+  setConfigValue,
   writeJob,
   writePrivateText,
-  writeRequest
+  writeRequest,
+  writeTurnEvidence
 } from "./lib/state.mjs";
+import { createStructuredFailureOutput } from "./lib/structured-output.mjs";
 import { createTaskJob, nowIso, runTrackedJob } from "./lib/tracked-jobs.mjs";
 import { resolveDirectory, resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
+const PLUGIN_ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+const REVIEW_SCHEMA = path.join(PLUGIN_ROOT, "schemas", "review-output.schema.json");
 
 function printUsage() {
   process.stdout.write(`agy-companion
 
 Usage:
   agy-companion setup
-  agy-companion task [options] [--] <prompt>
+  agy-companion task [--output-format text|json|stream-json] [--json-schema <schema>] [options] [--] <prompt>
+  agy-companion review [--wait|--background] [--base <ref>] [--scope auto|working-tree|branch]
+  agy-companion adversarial-review [review options] [focus text]
   agy-companion status [job-id] [--wait] [--all]
   agy-companion result [job-id]
   agy-companion cancel [job-id]
@@ -61,6 +81,10 @@ Usage:
 
 function output(value) {
   process.stdout.write(String(value ?? ""));
+}
+
+function outputJson(value) {
+  output(`${JSON.stringify(value, null, 2)}\n`);
 }
 
 function readStdinIfPiped() {
@@ -79,7 +103,19 @@ function requireSinglePositional(positionals, label) {
 
 function parseTaskRequest(argv) {
   const { options, positionals } = parseCommandArgs(argv, {
-    valueOptions: ["cwd", "model", "agent", "effort", "print-timeout", "add-dir", "project", "conversation"],
+    valueOptions: [
+      "cwd",
+      "model",
+      "agent",
+      "effort",
+      "print-timeout",
+      "output-format",
+      "json-schema",
+      "add-dir",
+      "project",
+      "conversation",
+      "job"
+    ],
     booleanOptions: [
       "background",
       "wait",
@@ -111,6 +147,12 @@ function parseTaskRequest(argv) {
   if (options.continue && options.conversation) {
     throw new Error("Choose either --continue or --conversation, not both.");
   }
+  if (options.job && (options.continue || options.conversation)) {
+    throw new Error("Choose exactly one of --job, --continue, or --conversation.");
+  }
+  if (options.job && !options["continue-command"]) {
+    throw new Error("--job is available only through /agy:continue.");
+  }
   if (options.project && options["new-project"]) {
     throw new Error("Choose either --project or --new-project, not both.");
   }
@@ -123,6 +165,30 @@ function parseTaskRequest(argv) {
 
   const cwd = resolveDirectory(options.cwd ?? process.cwd());
   const mode = options["full-access"] ? "full-access" : options.write ? "write" : "safe";
+  const outputFormat = options["output-format"] ?? "json";
+  let conversation = options.conversation ?? null;
+  if (options.job) {
+    const sourceJob = buildSingleJobSnapshot(cwd, options.job).job;
+    if (["queued", "running"].includes(sourceJob.status)) {
+      throw new Error(
+        `Job ${sourceJob.id} is still ${sourceJob.status}; wait for it to finish before continuing its conversation.`
+      );
+    }
+    if (!sourceJob.conversationId) {
+      throw new Error(`Job ${sourceJob.id} does not contain an Antigravity conversation ID.`);
+    }
+    conversation = sourceJob.conversationId;
+  }
+  const wantsContinuation = Boolean(options.continue || options["continue-command"]);
+  if (wantsContinuation && !conversation) {
+    const latest = resolveLatestConversationJob(cwd);
+    if (!latest) {
+      throw new Error(
+        "No resumable non-gate Antigravity conversation is recorded for this workspace. Pass --conversation <id>."
+      );
+    }
+    conversation = latest.job.conversationId;
+  }
   return {
     cwd,
     workspaceRoot: resolveWorkspaceRoot(cwd),
@@ -130,16 +196,110 @@ function parseTaskRequest(argv) {
     mode,
     fullAccessConfirmed: Boolean(options["confirm-full-access"]),
     background: Boolean(options.background),
-    continueLatest: Boolean(options.continue || (options["continue-command"] && !options.conversation)),
-    conversation: options.conversation ?? null,
+    continueLatest: false,
+    conversation,
     model: options.model ?? null,
     agent: options.agent ?? null,
     effort: options.effort ?? null,
     printTimeout: options["print-timeout"] ?? "5m0s",
+    outputFormat,
+    outputFormatExplicit: options["output-format"] !== undefined,
+    jsonSchema: options["json-schema"] ?? null,
     addDirs: options["add-dir"] ?? [],
     project: options.project ?? null,
     newProject: Boolean(options["new-project"])
   };
+}
+
+function parseReviewRequest(argv, kind) {
+  const { options, positionals } = parseCommandArgs(argv, {
+    valueOptions: ["cwd", "base", "scope", "model", "agent", "effort", "print-timeout"],
+    booleanOptions: ["background", "wait", "stop-gate", "review-json"],
+    allowInterspersedOptions: true,
+    splitSingleRawArgument: true
+  });
+  if (options.background && options.wait) {
+    throw new Error("Choose either --background or --wait, not both.");
+  }
+  if (kind === "review" && positionals.length) {
+    throw new Error("Use /agy:adversarial-review when custom review focus text is required.");
+  }
+  const stopGate = Boolean(options["stop-gate"]);
+  const cwd = resolveDirectory(options.cwd ?? process.cwd());
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  let target;
+  if (stopGate) {
+    const sessionId = process.env.AGY_STOP_GATE_SESSION_ID;
+    const baseline = readTurnSnapshot(workspaceRoot, sessionId);
+    if (!baseline) {
+      throw new Error("The stop review gate is missing a valid turn baseline.");
+    }
+    target = resolveTurnReviewTarget(cwd, baseline);
+    if (target.syntheticPatch) {
+      target.evidenceFile = writeTurnEvidence(workspaceRoot, sessionId, target.syntheticPatch);
+    }
+  } else {
+    target = resolveReviewTarget(cwd, {
+      base: options.base,
+      scope: options.scope
+    });
+  }
+  return {
+    cwd,
+    workspaceRoot,
+    prompt: buildReviewPrompt(target, {
+      kind,
+      focus: stopGate ? "" : positionals.join(" "),
+      stopGate
+    }),
+    mode: "safe",
+    fullAccessConfirmed: false,
+    background: Boolean(options.background),
+    continueLatest: false,
+    conversation: null,
+    model: options.model ?? null,
+    agent: options.agent ?? null,
+    effort: options.effort ?? null,
+    printTimeout: options["print-timeout"] ?? "5m0s",
+    outputFormat: "json",
+    outputFormatExplicit: false,
+    jsonSchema: REVIEW_SCHEMA,
+    addDirs: target.evidenceFile ? [path.dirname(target.evidenceFile)] : [],
+    project: null,
+    newProject: false,
+    kind: "review",
+    reviewKind: kind,
+    reviewTarget: target.label,
+    reviewSnapshot: target.snapshot,
+    stopGate,
+    reviewJson: Boolean(options["review-json"])
+  };
+}
+
+async function executeRequest(request, options = {}) {
+  if (request.kind === "review") {
+    assertRepositorySnapshot(request.cwd, request.reviewSnapshot);
+  }
+  const execution = await executeAgyTask(request, options);
+  if (request.kind !== "review") {
+    return execution;
+  }
+  try {
+    assertRepositorySnapshot(request.cwd, request.reviewSnapshot);
+    return execution;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ...execution,
+      exitStatus: 1,
+      stdout: "",
+      stderr: `${execution.stderr ?? ""}${execution.stderr ? "\n" : ""}${message}\n`,
+      errorMessage: message,
+      structured: null,
+      stdoutPersisted: false,
+      stderrPersisted: false
+    };
+  }
 }
 
 function continuationLabel(request) {
@@ -147,6 +307,10 @@ function continuationLabel(request) {
     return `conversation:${request.conversation}`;
   }
   return request.continueLatest ? "latest" : "new";
+}
+
+function usesRawStructuredOutput(job) {
+  return Boolean(job.outputFormatExplicit && ["json", "stream-json"].includes(job.outputFormat));
 }
 
 function spawnDetachedWorker(cwd, jobId) {
@@ -163,33 +327,69 @@ function spawnDetachedWorker(cwd, jobId) {
 
 async function handleSetup(argv) {
   const { options, positionals } = parseCommandArgs(argv, {
-    valueOptions: ["cwd"]
+    valueOptions: ["cwd"],
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
   });
   if (positionals.length) {
     throw new Error("setup does not accept positional arguments.");
   }
-  if (options.cwd) {
-    resolveDirectory(options.cwd);
+  if (options["enable-review-gate"] && options["disable-review-gate"]) {
+    throw new Error("Choose either --enable-review-gate or --disable-review-gate.");
   }
-  const result = probeAgy();
-  output(renderSetup(result));
+  const cwd = resolveDirectory(options.cwd ?? process.cwd());
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const actions = [];
+  if (options["enable-review-gate"]) {
+    setConfigValue(workspaceRoot, "stopReviewGate", true);
+    actions.push("Enabled the experimental stop-time review gate.");
+  } else if (options["disable-review-gate"]) {
+    setConfigValue(workspaceRoot, "stopReviewGate", false);
+    actions.push("Disabled the experimental stop-time review gate.");
+  }
+  let stateDirectory = null;
+  let stateWritable = false;
+  try {
+    stateDirectory = path.dirname(ensureStateDir(workspaceRoot));
+    stateWritable = true;
+  } catch {
+    // The setup report will mark the state directory unavailable.
+  }
+  const result = {
+    ...probeAgy(),
+    workspaceRoot,
+    stateDirectory,
+    stateWritable,
+    reviewGateEnabled: Boolean(readConfig(workspaceRoot).stopReviewGate),
+    actions
+  };
+  if (options.json) {
+    outputJson(result);
+  } else {
+    output(renderSetup(result));
+  }
   if (!result.available) {
     process.exitCode = 1;
   }
 }
 
-async function handleTask(argv) {
-  const request = parseTaskRequest(argv);
+async function executeTrackedRequest(request) {
   const job = createTaskJob({
     cwd: request.cwd,
     workspaceRoot: request.workspaceRoot,
     mode: request.mode,
     background: request.background,
-    continuation: continuationLabel(request)
+    continuation: continuationLabel(request),
+    outputFormat: request.outputFormat,
+    outputFormatExplicit: request.outputFormatExplicit,
+    jsonSchemaRequested: Boolean(request.jsonSchema),
+    kind: request.kind ?? "task",
+    reviewKind: request.reviewKind ?? null,
+    reviewTarget: request.reviewTarget ?? null,
+    reviewSnapshotFingerprint: request.reviewSnapshot?.fingerprint ?? null,
+    stopGate: Boolean(request.stopGate)
   });
 
   if (request.background) {
-    resolveAgyBinary();
     writeJob(request.workspaceRoot, job);
     writeRequest(request.workspaceRoot, job.id, request);
     appendLog(request.workspaceRoot, job.id, "Queued for background execution.");
@@ -219,11 +419,45 @@ async function handleTask(argv) {
     return;
   }
 
-  const outcome = await runTrackedJob(job, () => executeAgyTask(request));
-  output(renderExecution(outcome.job, outcome.execution));
+  const streamToConsole = request.outputFormat === "stream-json";
+  const outcome = await runTrackedJob(job, async (io) => ({
+    ...(await executeRequest(request, {
+      onStdout: streamToConsole
+        ? (chunk) => {
+            io.onStdout(chunk);
+            output(chunk);
+          }
+        : undefined,
+      onStderr: streamToConsole ? io.onStderr : undefined,
+      onProgress: io.onProgress
+    })),
+    stdoutStreamed: streamToConsole
+  }));
+  if (outcome.job.status !== "completed" && usesRawStructuredOutput(outcome.job)) {
+    if (!outcome.execution.stdoutStreamed) {
+      output(outcome.execution.stdout);
+    }
+    process.stderr.write(renderFailure(outcome.job, "", outcome.execution.stderr));
+  } else if (request.reviewJson && outcome.job.status === "completed") {
+    outputJson({
+      jobId: outcome.job.id,
+      conversationId: outcome.job.conversationId ?? null,
+      review: outcome.execution.structured?.structuredOutput ?? null
+    });
+  } else {
+    output(renderExecution(outcome.job, outcome.execution));
+  }
   if (outcome.job.status !== "completed") {
     process.exitCode = outcome.execution.exitStatus || 1;
   }
+}
+
+async function handleTask(argv) {
+  await executeTrackedRequest(parseTaskRequest(argv));
+}
+
+async function handleReview(argv, kind) {
+  await executeTrackedRequest(parseReviewRequest(argv, kind));
 }
 
 async function handleTaskWorker(argv) {
@@ -252,13 +486,19 @@ async function handleTaskWorker(argv) {
     throw new Error(`Background job ${job.id} is missing its request payload.`);
   }
 
-  await runTrackedJob({ ...job, cwd, workspaceRoot, background: true }, () => executeAgyTask(request));
+  await runTrackedJob({ ...job, cwd, workspaceRoot, background: true }, (io) =>
+    executeRequest(request, {
+      onStdout: request.outputFormat === "stream-json" ? io.onStdout : undefined,
+      onStderr: request.outputFormat === "stream-json" ? io.onStderr : undefined,
+      onProgress: io.onProgress
+    })
+  );
 }
 
 async function handleStatus(argv) {
   const { options, positionals } = parseCommandArgs(argv, {
     valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
-    booleanOptions: ["wait", "all"],
+    booleanOptions: ["wait", "all", "json"],
     allowInterspersedOptions: true,
     splitSingleRawArgument: true
   });
@@ -273,14 +513,28 @@ async function handleStatus(argv) {
       timeoutMs: options["timeout-ms"],
       pollIntervalMs: options["poll-interval-ms"]
     });
-    output(renderSingleStatus(snapshot));
+    if (options.json) {
+      outputJson(snapshot);
+    } else {
+      output(renderSingleStatus(snapshot));
+    }
     return;
   }
   if (reference) {
-    output(renderSingleStatus(buildSingleJobSnapshot(cwd, reference)));
+    const snapshot = buildSingleJobSnapshot(cwd, reference);
+    if (options.json) {
+      outputJson(snapshot);
+    } else {
+      output(renderSingleStatus(snapshot));
+    }
     return;
   }
-  output(renderStatus(buildStatusSnapshot(cwd, { all: Boolean(options.all) })));
+  const snapshot = buildStatusSnapshot(cwd, { all: Boolean(options.all) });
+  if (options.json) {
+    outputJson(snapshot);
+  } else {
+    output(renderStatus(snapshot));
+  }
 }
 
 function handleResult(argv) {
@@ -290,7 +544,14 @@ function handleResult(argv) {
   const reference = requireSinglePositional(positionals, "job reference");
   const cwd = resolveDirectory(options.cwd ?? process.cwd());
   const { job } = resolveResultJob(cwd, reference);
-  output(renderStoredResult(job, readPrivateText(job.stdoutFile), readPrivateText(job.stderrFile)));
+  const stdout = readPrivateText(job.stdoutFile);
+  const stderr = readPrivateText(job.stderrFile);
+  if (job.status !== "completed" && usesRawStructuredOutput(job)) {
+    output(stdout);
+    process.stderr.write(renderFailure(job, "", stderr));
+    return;
+  }
+  output(renderStoredResult(job, stdout, stderr));
 }
 
 function handleCancel(argv) {
@@ -304,6 +565,16 @@ function handleCancel(argv) {
   removeRequest(workspaceRoot, job.id);
 
   const stderr = readPrivateText(job.stderrFile);
+  if (usesRawStructuredOutput(job)) {
+    const failureOutput = createStructuredFailureOutput(job.outputFormat, {
+      message: "Cancelled by user."
+    });
+    if (job.outputFormat === "stream-json") {
+      replacePrivateNdjsonTerminal(job.stdoutFile, failureOutput);
+    } else {
+      writePrivateText(job.stdoutFile, failureOutput);
+    }
+  }
   writePrivateText(job.stderrFile, `${stderr}${stderr && !stderr.endsWith("\n") ? "\n" : ""}Cancelled by user.\n`);
   const cancelled = writeJob(workspaceRoot, {
     ...job,
@@ -331,6 +602,12 @@ async function main() {
       break;
     case "task":
       await handleTask(argv);
+      break;
+    case "review":
+      await handleReview(argv, "review");
+      break;
+    case "adversarial-review":
+      await handleReview(argv, "adversarial");
       break;
     case "task-worker":
       await handleTaskWorker(argv);

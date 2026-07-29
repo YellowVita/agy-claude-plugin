@@ -1,12 +1,14 @@
 ---
-description: Continue the latest Antigravity conversation or a known conversation ID
-argument-hint: '[--conversation <id>] [--background] [--write|--full-access] [runtime options] [--] <follow-up task>'
+description: Continue the latest recorded non-gate Antigravity conversation, a job, or a known conversation ID
+argument-hint: '[--job <job-id>|--conversation <id>] [--background] [--write|--full-access] [structured output options] [runtime options] [--] <follow-up task>'
 disable-model-invocation: true
 allowed-tools: Bash(node:*), AskUserQuestion
 ---
 
 Forward the raw request to the companion `task` runtime and add the internal `--continue-command` routing flag.
-If the user supplied `--conversation <id>`, the runtime uses that ID instead of the latest conversation.
+If the user supplied `--conversation <id>`, the runtime uses that ID instead of the latest recorded non-gate conversation.
+If the user supplied `--job <job-id>`, the runtime resolves the stored structured-output conversation ID for that job.
+Without either flag, the runtime selects the latest non-gate conversation recorded by this plugin and never uses agy's global `-c` pointer.
 
 Raw request:
 $ARGUMENTS

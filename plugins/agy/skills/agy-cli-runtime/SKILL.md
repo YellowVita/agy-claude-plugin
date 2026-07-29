@@ -22,6 +22,6 @@ Contract:
 - Preserve `--write` only when the user explicitly supplied it.
 - Never infer write access.
 - Never pass `--full-access` or `--confirm-full-access`; those require a direct slash command and confirmation.
-- Preserve explicit background, continuation, model, agent, effort, timeout, extra-directory, and project controls.
+- Preserve explicit background, continuation, output-format, JSON-schema, model, agent, effort, timeout, extra-directory, and project controls.
 - Do not call setup, status, result, cancel, or another agent.
 - On failure, preserve the runtime error rather than fabricating an Antigravity answer.

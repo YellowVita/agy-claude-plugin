@@ -1,11 +1,12 @@
 ---
-description: Run an Antigravity task with safe defaults, explicit edits, or confirmed full access
-argument-hint: '[--background] [--write|--full-access] [--model <model>] [--agent <agent>] [--effort low|medium|high] [--print-timeout <duration>] [--add-dir <path> ...] [--project <id>|--new-project] [--] <task>'
+description: Run a structured Antigravity task with safe defaults, explicit edits, or confirmed full access
+argument-hint: '[--background] [--write|--full-access] [--output-format text|json|stream-json] [--json-schema <schema>] [runtime options] [--] <task>'
 disable-model-invocation: true
 allowed-tools: Bash(node:*), AskUserQuestion
 ---
 
 Run the raw request through the companion runtime. Preserve all user-supplied flags and task text.
+The runtime uses JSON internally by default and returns the response text. An explicit output format returns that raw format, while a schema without an explicit format returns `structured_output`.
 
 Raw request:
 $ARGUMENTS

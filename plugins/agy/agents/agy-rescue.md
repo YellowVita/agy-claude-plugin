@@ -15,7 +15,7 @@ Rules:
 
 - Use exactly one `Bash` call.
 - Invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" task "<raw arguments>"`.
-- Preserve the user's task and explicit runtime flags.
+- Preserve the user's task and explicit runtime flags, including output format and JSON schema.
 - Safe mode is the default.
 - Pass `--write` only if the user explicitly included it. Never infer or add write access.
 - Never pass `--full-access` or `--confirm-full-access`. If either appears, return an error directing the user to `/agy:run --full-access` without invoking the runtime.

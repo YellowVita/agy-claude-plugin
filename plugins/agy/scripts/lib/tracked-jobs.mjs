@@ -7,6 +7,11 @@
 import process from "node:process";
 
 import {
+  createStructuredFailureOutput,
+  parseStructuredOutput
+} from "./structured-output.mjs";
+import {
+  appendPrivateText,
   appendLog,
   generateJobId,
   pruneFinishedJobs,
@@ -21,17 +26,36 @@ export function nowIso() {
   return new Date().toISOString();
 }
 
-export function createTaskJob({ cwd, workspaceRoot, mode, background, continuation }) {
+export function createTaskJob({
+  cwd,
+  workspaceRoot,
+  mode,
+  background,
+  continuation,
+  outputFormat,
+  outputFormatExplicit,
+  jsonSchemaRequested,
+  kind = "task",
+  reviewKind = null,
+  reviewTarget = null,
+  stopGate = false
+}) {
   const id = generateJobId();
   return {
-    version: 1,
+    version: 3,
     id,
-    kind: "task",
+    kind,
+    reviewKind,
+    reviewTarget,
+    stopGate,
     status: background ? "queued" : "created",
     phase: background ? "queued" : "created",
     mode,
     background,
     continuation,
+    outputFormat,
+    outputFormatExplicit,
+    jsonSchemaRequested,
     cwd,
     workspaceRoot,
     pid: null,
@@ -52,25 +76,51 @@ export async function runTrackedJob(job, runner) {
     errorMessage: null
   });
   appendLog(job.workspaceRoot, job.id, `Started ${job.mode} ${job.background ? "background" : "foreground"} task.`);
+  writePrivateText(current.stdoutFile, "");
+  writePrivateText(current.stderrFile, "");
 
   let execution;
   try {
-    execution = await runner();
+    execution = await runner({
+      onStdout: (chunk) => appendPrivateText(current.stdoutFile, chunk),
+      onStderr: (chunk) => appendPrivateText(current.stderrFile, chunk),
+      onProgress: (progress) => {
+        current = writeJob(job.workspaceRoot, {
+          ...current,
+          phase: progress.phase ?? current.phase,
+          conversationId: progress.conversationId ?? current.conversationId ?? null,
+          toolCallCount: progress.toolCallCount ?? current.toolCallCount ?? 0,
+          subagentCount: progress.subagentCount ?? current.subagentCount ?? 0,
+          recentSteps: progress.recentSteps ?? current.recentSteps ?? [],
+          subagents: progress.subagents ?? current.subagents ?? []
+        });
+      }
+    });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
+    const structuredFailure =
+      job.outputFormatExplicit && ["json", "stream-json"].includes(job.outputFormat)
+        ? createStructuredFailureOutput(job.outputFormat, { message: errorMessage })
+        : "";
     execution = {
       exitStatus: 1,
       signal: null,
-      stdout: "",
+      stdout: structuredFailure,
       stderr: errorMessage,
-      errorMessage
+      errorMessage,
+      structured: structuredFailure ? parseStructuredOutput(job.outputFormat, structuredFailure) : null
     };
   }
 
-  writePrivateText(current.stdoutFile, execution.stdout ?? "");
-  writePrivateText(current.stderrFile, execution.stderr ?? execution.errorMessage ?? "");
+  if (!execution.stdoutPersisted) {
+    writePrivateText(current.stdoutFile, execution.stdout ?? "");
+  }
+  if (!execution.stderrPersisted) {
+    writePrivateText(current.stderrFile, execution.stderr ?? execution.errorMessage ?? "");
+  }
 
   const completed = execution.exitStatus === 0 && !execution.errorMessage;
+  const structured = execution.structured;
   current = writeJob(job.workspaceRoot, {
     ...current,
     status: completed ? "completed" : "failed",
@@ -79,7 +129,16 @@ export async function runTrackedJob(job, runner) {
     completedAt: nowIso(),
     exitStatus: execution.exitStatus,
     signal: execution.signal ?? null,
-    errorMessage: execution.errorMessage ?? null
+    errorMessage: execution.errorMessage ?? null,
+    conversationId: structured?.conversationId ?? null,
+    remoteStatus: structured?.remoteStatus ?? null,
+    durationSeconds: structured?.durationSeconds ?? null,
+    numTurns: structured?.numTurns ?? null,
+    usage: structured?.usage ?? null,
+    toolCallCount: structured?.toolCallCount ?? 0,
+    subagentCount: structured?.subagentCount ?? 0,
+    recentSteps: structured?.recentSteps ?? current.recentSteps ?? [],
+    subagents: structured?.subagents ?? current.subagents ?? []
   });
   appendLog(
     job.workspaceRoot,

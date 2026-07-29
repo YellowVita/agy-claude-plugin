@@ -4,6 +4,8 @@
 // Copyright 2026 OpenAI
 // Modifications Copyright 2026 Antigravity Plugin Contributors.
 
+import { parseStructuredOutput, renderSuccessfulOutput } from "./structured-output.mjs";
+
 function escapeCell(value) {
   return String(value ?? "-").replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
 }
@@ -29,13 +31,32 @@ function formatDuration(job) {
 
 export function renderSetup(result) {
   if (!result.available) {
-    return `# Antigravity Setup\n\nagy is unavailable.\n\n${result.detail}\n`;
+    return [
+      "# Antigravity Setup",
+      "",
+      "agy is unavailable or incompatible.",
+      "",
+      result.detail,
+      result.version ? `Detected version: ${result.version}` : null,
+      result.stateDirectory ? `State: ${result.stateDirectory} (${result.stateWritable ? "writable" : "not writable"})` : null,
+      ""
+    ]
+      .filter((line) => line !== null)
+      .join("\n");
   }
+  const capabilities = Object.entries(result.capabilities ?? {})
+    .map(([name, enabled]) => `${name}=${enabled ? "yes" : "no"}`)
+    .join(", ");
   return [
     "# Antigravity Setup",
     "",
+    ...(result.actions ?? []),
+    ...(result.actions?.length ? [""] : []),
     `Executable: ${result.binary}`,
     `Version: ${result.version}`,
+    `Required features: ${capabilities || "verified"}`,
+    `State: ${result.stateDirectory ?? "unavailable"} (${result.stateWritable ? "writable" : "not writable"})`,
+    `Stop review gate: ${result.reviewGateEnabled ? "enabled (experimental)" : "disabled"}`,
     "Authentication: not probeable through a noninteractive agy subcommand.",
     "If authentication is required, run `agy` in a terminal with an interactive TTY and retry.",
     "If Claude Code's `! agy` reports `/dev/tty` unavailable, run `agy` in a separate terminal window.",
@@ -44,11 +65,13 @@ export function renderSetup(result) {
 }
 
 export function renderQueued(job) {
+  const title = job.kind === "review" ? "Antigravity Review Queued" : "Antigravity Job Queued";
   return [
-    "# Antigravity Job Queued",
+    `# ${title}`,
     "",
     `Job: ${job.id}`,
     `Mode: ${job.mode}`,
+    `Output: ${job.outputFormat}`,
     "",
     `Check: /agy:status ${job.id}`,
     `Wait: /agy:status ${job.id} --wait`,
@@ -58,7 +81,84 @@ export function renderQueued(job) {
   ].join("\n");
 }
 
-function renderFailure(job, stdout, stderr) {
+function isReviewResult(value) {
+  return (
+    value &&
+    typeof value === "object" &&
+    ["approve", "needs-attention"].includes(value.verdict) &&
+    typeof value.summary === "string" &&
+    Array.isArray(value.findings) &&
+    Array.isArray(value.next_steps)
+  );
+}
+
+export function renderReviewResult(job, value) {
+  const title = job.reviewKind === "adversarial" ? "Antigravity Adversarial Review" : "Antigravity Review";
+  if (!isReviewResult(value)) {
+    return [
+      `# ${title}`,
+      "",
+      `Target: ${job.reviewTarget ?? "-"}`,
+      "",
+      "Antigravity returned structured output with an unexpected review shape.",
+      "",
+      "## Raw structured output",
+      "",
+      "```json",
+      JSON.stringify(value ?? null, null, 2),
+      "```",
+      ""
+    ].join("\n");
+  }
+
+  const lines = [
+    `# ${title}`,
+    "",
+    `Target: ${job.reviewTarget ?? "-"}`,
+    `Verdict: ${value.verdict}`,
+    "",
+    value.summary.trim(),
+    "",
+    "## Findings",
+    ""
+  ];
+  if (value.findings.length === 0) {
+    lines.push("No actionable findings.", "");
+  } else {
+    for (const finding of value.findings) {
+      const location =
+        finding.file && Number.isInteger(finding.line_start)
+          ? `${finding.file}:${finding.line_start}${finding.line_end !== finding.line_start ? `-${finding.line_end}` : ""}`
+          : finding.file ?? "unknown location";
+      const confidence = Number.isFinite(finding.confidence)
+        ? `, ${Math.round(finding.confidence * 100)}% confidence`
+        : "";
+      lines.push(
+        `### [${String(finding.severity ?? "unknown").toUpperCase()}] ${finding.title ?? "Untitled finding"}`,
+        "",
+        `Location: ${location}${confidence}`,
+        "",
+        String(finding.body ?? "").trim(),
+        "",
+        finding.recommendation ? `Recommendation: ${String(finding.recommendation).trim()}` : "",
+        ""
+      );
+    }
+  }
+  if (value.next_steps.length) {
+    lines.push("## Next steps", "");
+    for (const step of value.next_steps) {
+      lines.push(`- ${step}`);
+    }
+    lines.push("");
+  }
+  if (job.conversationId) {
+    lines.push(`Conversation: ${job.conversationId}`, `Continue: /agy:continue --job ${job.id} -- <follow-up>`, "");
+  }
+  return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd()}\n`;
+}
+
+export function renderFailure(job, stdout, stderr) {
   const lines = [
     "# Antigravity Task Failed",
     "",
@@ -81,14 +181,24 @@ function renderFailure(job, stdout, stderr) {
 
 export function renderExecution(job, execution) {
   if (job.status === "completed") {
-    return String(execution.stdout ?? "");
+    if (execution.stdoutStreamed) {
+      return "";
+    }
+    if (job.kind === "review") {
+      return renderReviewResult(job, execution.structured?.structuredOutput);
+    }
+    return renderSuccessfulOutput(job, execution.stdout, execution.structured);
   }
-  return renderFailure(job, execution.stdout, execution.stderr);
+  return renderFailure(job, execution.stdoutStreamed ? "" : execution.stdout, execution.stderr);
 }
 
 export function renderStoredResult(job, stdout, stderr) {
   if (job.status === "completed") {
-    return stdout ? String(stdout) : `Antigravity job ${job.id} completed without stdout.\n`;
+    if (job.kind === "review") {
+      const structured = parseStructuredOutput(job.outputFormat ?? "json", stdout);
+      return renderReviewResult(job, structured?.structuredOutput);
+    }
+    return stdout ? renderSuccessfulOutput(job, stdout) : `Antigravity job ${job.id} completed without stdout.\n`;
   }
   if (job.status === "cancelled") {
     return [
@@ -127,6 +237,14 @@ export function renderStatus(snapshot) {
 
 export function renderSingleStatus(snapshot) {
   const job = snapshot.job;
+  const usage = job.usage;
+  const usageText = usage
+    ? `${usage.total_tokens ?? "-"} total, ${usage.cache_read_tokens ?? 0} cache-read`
+    : "-";
+  const latestStep = job.recentSteps?.at?.(-1);
+  const childSummary = Array.isArray(job.subagents)
+    ? job.subagents.map((child) => child.conversationId).filter(Boolean).join(", ")
+    : "";
   return [
     "# Antigravity Job Status",
     "",
@@ -134,8 +252,15 @@ export function renderSingleStatus(snapshot) {
     `Status: ${job.status}`,
     `Phase: ${job.phase}`,
     `Mode: ${job.mode}`,
+    `Output: ${job.outputFormat ?? "text"}`,
     `Scope: ${job.background ? "background" : "foreground"}`,
     `Time: ${formatDuration(job)}`,
+    `Conversation: ${job.conversationId ?? "-"}`,
+    `Usage: ${usageText}`,
+    `Tool calls: ${job.toolCallCount ?? 0}`,
+    `Subagents: ${job.subagentCount ?? 0}`,
+    latestStep ? `Latest step: ${latestStep.stepType ?? "-"} / ${latestStep.state ?? "-"}` : null,
+    childSummary ? `Child conversations: ${childSummary}` : null,
     job.errorMessage ? `Error: ${job.errorMessage}` : null,
     `Log: ${job.logFile}`,
     ""

@@ -22,6 +22,40 @@ export function resolveDirectory(value = process.cwd()) {
   }
 }
 
+function findGitMetadataRoot(directory) {
+  let candidate = directory;
+  while (true) {
+    try {
+      const metadataPath = path.join(candidate, ".git");
+      const stat = fs.lstatSync(metadataPath);
+      if (stat.isDirectory() && fs.statSync(path.join(metadataPath, "HEAD")).isFile()) {
+        return candidate;
+      }
+      if (stat.isFile()) {
+        const match = /^gitdir:\s*(.+)\s*$/i.exec(fs.readFileSync(metadataPath, "utf8"));
+        if (match) {
+          const gitDirectory = path.resolve(candidate, match[1]);
+          if (
+            fs.statSync(gitDirectory).isDirectory() &&
+            fs.statSync(path.join(gitDirectory, "HEAD")).isFile()
+          ) {
+            return candidate;
+          }
+        }
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") {
+        return null;
+      }
+    }
+    const parent = path.dirname(candidate);
+    if (parent === candidate) {
+      return null;
+    }
+    candidate = parent;
+  }
+}
+
 export function resolveWorkspaceRoot(cwd) {
   const directory = resolveDirectory(cwd);
   const result = runCommand("git", ["rev-parse", "--show-toplevel"], {
@@ -32,8 +66,8 @@ export function resolveWorkspaceRoot(cwd) {
     try {
       return resolveDirectory(result.stdout.trim());
     } catch {
-      return directory;
+      return findGitMetadataRoot(directory) ?? directory;
     }
   }
-  return directory;
+  return findGitMetadataRoot(directory) ?? directory;
 }

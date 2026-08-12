@@ -4,15 +4,50 @@ import fs from "node:fs";
 
 const argv = process.argv.slice(2);
 if (argv.length === 1 && argv[0] === "--version") {
-  process.stdout.write(process.env.FAKE_AGY_VERSION ?? "agy 1.1.8-fake\n");
+  process.stdout.write(process.env.FAKE_AGY_VERSION ?? "agy 1.1.12-fake\n");
   process.exit(0);
 }
 if (argv.length === 1 && argv[0] === "--help") {
   process.stdout.write(
     process.env.FAKE_AGY_HELP ??
-      "Usage: agy -p <prompt> --output-format <text|json|stream-json> --json-schema <schema>\n"
+      "Usage: agy -p <prompt> --output-format <text|json|stream-json> --json-schema <schema> --disable-slash-commands\n"
   );
   process.exit(0);
+}
+
+const catalogName =
+  argv.length === 3 && argv[0] === "--output-format" && argv[1] === "json" && ["models", "agents"].includes(argv[2])
+    ? argv[2]
+    : null;
+if (catalogName) {
+  const prefix = `FAKE_AGY_${catalogName.toUpperCase()}`;
+  process.stderr.write(process.env[`${prefix}_STDERR`] ?? "");
+  if (process.env[`${prefix}_STDOUT`] !== undefined) {
+    process.stdout.write(process.env[`${prefix}_STDOUT`]);
+  } else {
+    const entries =
+      catalogName === "models"
+        ? [{ id: "fake-model", label: "Fake Model" }]
+        : [{ id: "fake-agent", name: "Fake Agent" }];
+    process.stdout.write(
+      `${JSON.stringify({
+        conversation_id: "",
+        status: "SUCCESS",
+        response: "",
+        duration_seconds: 0,
+        num_turns: 0,
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          thinking_tokens: 0,
+          cache_read_tokens: 0,
+          total_tokens: 0
+        },
+        command: { name: catalogName, data: { [catalogName]: entries } }
+      })}\n`
+    );
+  }
+  process.exit(Number(process.env[`${prefix}_EXIT`] ?? 0));
 }
 
 const stdin = fs.readFileSync(0, "utf8");

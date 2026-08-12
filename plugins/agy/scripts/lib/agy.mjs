@@ -14,12 +14,16 @@ import { resolveDirectory } from "./workspace.mjs";
 const DEFAULT_PRINT_TIMEOUT = "5m0s";
 const DEFAULT_OUTPUT_FORMAT = "json";
 const OUTER_TIMEOUT_GRACE_MS = 30_000;
+// Leave enough time for the Windows taskkill or POSIX descendant scan plus the timeout finalizer.
+const CLAIM_FINALIZE_RESERVE_MS = 10_000;
+const CATALOG_TIMEOUT_MS = 30_000;
 const VALID_EFFORTS = new Set(["low", "medium", "high"]);
-const MINIMUM_AGY_VERSION = [1, 1, 8];
+const MINIMUM_AGY_VERSION = [1, 1, 12];
 const REQUIRED_HELP_FEATURES = [
   { name: "json output", pattern: /--output-format[\s\S]*(?:json|stream-json)/i },
   { name: "stream-json output", pattern: /stream-json/i },
-  { name: "JSON schema validation", pattern: /--json-schema/i }
+  { name: "JSON schema validation", pattern: /--json-schema/i },
+  { name: "slash-command disabling", pattern: /--disable-slash-commands/i }
 ];
 
 function isSupportedAgyVersion(value) {
@@ -37,6 +41,64 @@ function isSupportedAgyVersion(value) {
     }
   }
   return true;
+}
+
+function requireSupportedAgyVersion(binary, env) {
+  const result = runCommand(binary, ["--version"], { env, timeout: 10_000 });
+  if (result.error || result.status !== 0) {
+    throw new Error(`Could not inspect the agy version: ${formatCommandFailure(result)}`);
+  }
+  const version = result.stdout.trim() || result.stderr.trim() || "unknown";
+  if (!isSupportedAgyVersion(version)) {
+    throw new Error(`agy 1.1.12 or newer is required; found ${version}.`);
+  }
+  return version;
+}
+
+function probeCatalog(binary, name, options = {}) {
+  const result = runCommand(binary, ["--output-format", "json", name], {
+    env: options.env ?? process.env,
+    timeout: options.catalogTimeoutMs ?? CATALOG_TIMEOUT_MS
+  });
+  let payload = null;
+  let parseError = null;
+  try {
+    payload = JSON.parse(String(result.stdout ?? "").trim());
+  } catch (error) {
+    parseError = error instanceof Error ? error : new Error(String(error));
+  }
+
+  if (!result.error && result.status === 0 && parseError) {
+    return {
+      ready: false,
+      entries: [],
+      detail: `agy ${name} returned invalid JSON: ${parseError.message}`
+    };
+  }
+  if (result.error || result.status !== 0 || payload?.status !== "SUCCESS") {
+    const reportedError = typeof payload?.error === "string" ? payload.error.trim() : "";
+    return {
+      ready: false,
+      entries: [],
+      detail: reportedError || `Could not query agy ${name}: ${formatCommandFailure(result)}`
+    };
+  }
+  const entries = payload?.command?.data?.[name];
+  if (!Array.isArray(entries)) {
+    return {
+      ready: false,
+      entries: [],
+      detail: `agy ${name} output did not contain command.data.${name}.`
+    };
+  }
+  if (name === "models" && entries.length === 0) {
+    return {
+      ready: false,
+      entries,
+      detail: "agy models returned no available models."
+    };
+  }
+  return { ready: true, entries };
 }
 
 function executableNames(platform) {
@@ -212,6 +274,7 @@ export function buildAgyArgs(request) {
   if (typeof request.prompt !== "string" || !request.prompt.trim()) {
     throw new Error("Antigravity requires a non-empty prompt.");
   }
+  args.push("--disable-slash-commands");
   args.push("-p", request.prompt);
   return args;
 }
@@ -235,7 +298,7 @@ export function probeAgy(options = {}) {
       return {
         available: false,
         binary,
-        detail: `agy 1.1.8 or newer is required; found ${version}.`
+        detail: `agy 1.1.12 or newer is required; found ${version}.`
       };
     }
     const help = runCommand(binary, ["--help"], {
@@ -266,7 +329,31 @@ export function probeAgy(options = {}) {
         detail: `The installed agy lacks required features: ${missing.join(", ")}. Update agy and retry.`
       };
     }
-    return { available: true, binary, version, capabilities };
+    const models = probeCatalog(binary, "models", options);
+    if (!models.ready) {
+      return {
+        available: true,
+        ready: false,
+        binary,
+        version,
+        capabilities,
+        catalogs: {
+          models,
+          agents: { ready: false, skipped: true, entries: [] }
+        },
+        readinessDetail: models.detail
+      };
+    }
+    const agents = probeCatalog(binary, "agents", options);
+    return {
+      available: true,
+      ready: agents.ready,
+      binary,
+      version,
+      capabilities,
+      catalogs: { models, agents },
+      readinessDetail: agents.ready ? null : agents.detail
+    };
   } catch (error) {
     return {
       available: false,
@@ -279,9 +366,30 @@ export function probeAgy(options = {}) {
 export async function executeAgyTask(request, options = {}) {
   const env = options.env ?? process.env;
   const binary = resolveAgyBinary({ env });
-  const args = buildAgyArgs(request);
+  requireSupportedAgyVersion(binary, env);
   const outputFormat = validateOutputFormat(request.outputFormat ?? DEFAULT_OUTPUT_FORMAT);
-  const printTimeoutMs = parseDurationMs(request.printTimeout ?? DEFAULT_PRINT_TIMEOUT);
+  const requestedPrintTimeoutMs = parseDurationMs(request.printTimeout ?? DEFAULT_PRINT_TIMEOUT);
+  let printTimeoutMs = requestedPrintTimeoutMs;
+  let outerTimeoutMs = requestedPrintTimeoutMs + OUTER_TIMEOUT_GRACE_MS;
+  if (request.conversation) {
+    const claimDeadline = Date.parse(request.conversationClaimExpiresAt ?? "");
+    const remainingLeaseMs = claimDeadline - Date.now();
+    if (!Number.isFinite(remainingLeaseMs) || remainingLeaseMs <= OUTER_TIMEOUT_GRACE_MS) {
+      throw new Error(
+        `The execution lease for Antigravity conversation ${request.conversation} expired before launch.`
+      );
+    }
+    printTimeoutMs = Math.min(requestedPrintTimeoutMs, remainingLeaseMs - OUTER_TIMEOUT_GRACE_MS);
+    outerTimeoutMs = Math.min(
+      printTimeoutMs + OUTER_TIMEOUT_GRACE_MS,
+      remainingLeaseMs - CLAIM_FINALIZE_RESERVE_MS
+    );
+  }
+  const effectivePrintTimeout =
+    printTimeoutMs === requestedPrintTimeoutMs
+      ? request.printTimeout ?? DEFAULT_PRINT_TIMEOUT
+      : `${Math.floor(printTimeoutMs)}ms`;
+  const args = buildAgyArgs({ ...request, printTimeout: effectivePrintTimeout });
   let stderrTail = "";
   const appendStderrTail = (chunk) => {
     stderrTail += chunk;
@@ -301,7 +409,7 @@ export async function executeAgyTask(request, options = {}) {
   const result = await runCommandStreaming(binary, args, {
     cwd: request.cwd,
     env,
-    timeout: printTimeoutMs + OUTER_TIMEOUT_GRACE_MS,
+    timeout: outerTimeoutMs,
     maxBuffer: 32 * 1024 * 1024,
     captureStdout: outputFormat !== "stream-json",
     captureStderr: outputFormat !== "stream-json",

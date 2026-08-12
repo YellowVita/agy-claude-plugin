@@ -29,6 +29,25 @@ function formatDuration(job) {
   return `${remainder}s`;
 }
 
+function formatCatalog(label, catalog) {
+  if (catalog?.skipped) {
+    return `${label}: not checked`;
+  }
+  if (!catalog?.ready) {
+    return `${label}: unavailable`;
+  }
+  const entries = Array.isArray(catalog.entries) ? catalog.entries : [];
+  const names = entries
+    .map((entry) => {
+      if (typeof entry === "string") {
+        return entry;
+      }
+      return entry?.id ?? entry?.name ?? entry?.label ?? null;
+    })
+    .filter(Boolean);
+  return `${label}: ${entries.length} available${names.length ? ` (${names.join(", ")})` : ""}`;
+}
+
 export function renderSetup(result) {
   if (!result.available) {
     return [
@@ -38,7 +57,8 @@ export function renderSetup(result) {
       "",
       result.detail,
       result.version ? `Detected version: ${result.version}` : null,
-      result.stateDirectory ? `State: ${result.stateDirectory} (${result.stateWritable ? "writable" : "not writable"})` : null,
+      `State: ${result.stateDirectory ?? "unavailable"} (${result.stateWritable ? "writable" : "not writable"})`,
+      result.stateWritable ? null : `State error: ${result.stateDetail ?? "unknown error"}`,
       ""
     ]
       .filter((line) => line !== null)
@@ -55,13 +75,21 @@ export function renderSetup(result) {
     `Executable: ${result.binary}`,
     `Version: ${result.version}`,
     `Required features: ${capabilities || "verified"}`,
+    `Backend readiness: ${result.ready ? "ready" : "not ready"}`,
+    formatCatalog("Models", result.catalogs?.models),
+    formatCatalog("Agents", result.catalogs?.agents),
     `State: ${result.stateDirectory ?? "unavailable"} (${result.stateWritable ? "writable" : "not writable"})`,
+    result.stateWritable ? null : `State error: ${result.stateDetail ?? "unknown error"}`,
     `Stop review gate: ${result.reviewGateEnabled ? "enabled (experimental)" : "disabled"}`,
-    "Authentication: not probeable through a noninteractive agy subcommand.",
-    "If authentication is required, run `agy` in a terminal with an interactive TTY and retry.",
-    "If Claude Code's `! agy` reports `/dev/tty` unavailable, run `agy` in a separate terminal window.",
+    result.ready ? "Authentication and catalog access: ready." : `Readiness error: ${result.readinessDetail}`,
+    result.ready ? null : "If authentication is required, run `agy` in a terminal with an interactive TTY and retry.",
+    result.ready
+      ? null
+      : "If Claude Code's `! agy` reports `/dev/tty` unavailable, run `agy` in a separate terminal window.",
     ""
-  ].join("\n");
+  ]
+    .filter((line) => line !== null)
+    .join("\n");
 }
 
 export function renderQueued(job) {
@@ -170,8 +198,15 @@ export function renderFailure(job, stdout, stderr) {
   if (job.errorMessage) {
     lines.push("", job.errorMessage);
   }
-  if (stderr) {
-    lines.push("", "## stderr", "", String(stderr).trimEnd());
+  const normalizedStderr = String(stderr ?? "").trim();
+  const normalizedError = String(job.errorMessage ?? "").trim();
+  const stderrWithoutDuplicateError =
+    normalizedError &&
+    (normalizedStderr === normalizedError || normalizedStderr.endsWith(`\n${normalizedError}`))
+      ? normalizedStderr.slice(0, -normalizedError.length).trimEnd()
+      : normalizedStderr;
+  if (stderrWithoutDuplicateError) {
+    lines.push("", "## stderr", "", stderrWithoutDuplicateError);
   }
   if (stdout) {
     lines.push("", "## partial stdout", "", String(stdout).trimEnd());
@@ -276,6 +311,7 @@ export function renderCancel(job, outcome) {
     `Job: ${job.id}`,
     `Signal method: ${outcome.method ?? "none"}`,
     `Signal delivered: ${outcome.delivered ? "yes" : "process already stopped"}`,
+    "Process tree stopped: yes",
     "",
     `Check: /agy:status ${job.id}`,
     ""

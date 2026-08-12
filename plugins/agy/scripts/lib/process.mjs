@@ -226,6 +226,42 @@ export function isProcessRunning(pid, killImpl = process.kill.bind(process)) {
   }
 }
 
+export function isProcessTreeRunning(pid, options = {}) {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  const platform = options.platform ?? process.platform;
+  const killImpl = options.killImpl ?? process.kill.bind(process);
+  if (platform === "win32") {
+    return isProcessRunning(pid, killImpl);
+  }
+  try {
+    killImpl(-pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "EPERM") {
+      return true;
+    }
+    if (error?.code !== "ESRCH") {
+      throw error;
+    }
+  }
+  return isProcessRunning(pid, killImpl);
+}
+
+export async function waitForProcessTreeExit(pid, options = {}) {
+  const timeoutMs = options.timeoutMs ?? 2_000;
+  const pollIntervalMs = options.pollIntervalMs ?? 25;
+  const deadline = Date.now() + timeoutMs;
+  while (isProcessTreeRunning(pid, options)) {
+    if (Date.now() >= deadline) {
+      return false;
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+  return true;
+}
+
 function looksLikeMissingProcessMessage(text) {
   return /not found|no running instance|cannot find|does not exist|no such process/i.test(text);
 }
@@ -238,6 +274,7 @@ export function terminateProcessTree(pid, options = {}) {
   const platform = options.platform ?? process.platform;
   const runCommandImpl = options.runCommandImpl ?? runCommand;
   const killImpl = options.killImpl ?? process.kill.bind(process);
+  const signal = options.signal ?? "SIGTERM";
 
   if (platform === "win32") {
     const result = runCommandImpl("taskkill", ["/PID", String(pid), "/T", "/F"], {
@@ -253,7 +290,7 @@ export function terminateProcessTree(pid, options = {}) {
     }
     if (result.error?.code === "ENOENT") {
       try {
-        killImpl(pid, "SIGTERM");
+        killImpl(pid, signal);
         return { attempted: true, delivered: true, method: "kill" };
       } catch (error) {
         if (error?.code === "ESRCH") {
@@ -269,14 +306,14 @@ export function terminateProcessTree(pid, options = {}) {
   }
 
   try {
-    killImpl(-pid, "SIGTERM");
+    killImpl(-pid, signal);
     return { attempted: true, delivered: true, method: "process-group" };
   } catch (error) {
     if (error?.code === "ESRCH") {
       return { attempted: true, delivered: false, method: "process-group" };
     }
     try {
-      killImpl(pid, "SIGTERM");
+      killImpl(pid, signal);
       return { attempted: true, delivered: true, method: "process" };
     } catch (innerError) {
       if (innerError?.code === "ESRCH") {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- Raised the minimum Antigravity CLI version to 1.1.12 so headless mode, model, and effort controls use their corrected upstream behavior.
+- Preserved delegated task text by disabling Antigravity slash-command expansion for companion runs.
+- Added machine-readable model and agent catalog readiness checks to setup, with backend diagnostics and authentication guidance.
+- Prevented concurrent continuations of the same Antigravity conversation with cross-workspace, deadline-backed claims and stale-owner recovery.
+- Preserved successful Antigravity stderr diagnostics without contaminating JSON or stream-JSON stdout.
+
 ## 0.3.0
 
 - Added read-only review and adversarial-review commands with git scope selection and schema-validated findings.

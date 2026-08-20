@@ -5,8 +5,8 @@ This plugin delegates tasks from Claude Code to the locally installed Antigravit
 ## Requirements
 
 - Node.js 18.18 or newer
-- `agy` 1.1.8 or newer on `PATH`
-- Antigravity authentication completed interactively when required
+- `agy` 1.1.12 or newer on `PATH`
+- Antigravity authentication configured for the selected account or environment
 
 To authenticate, run `agy` in a terminal with an interactive TTY:
 
@@ -15,6 +15,8 @@ agy
 ```
 
 If Claude Code's `! agy` reports that `/dev/tty` is unavailable, run `agy` in a separate WSL, Windows Terminal, or other interactive terminal window.
+
+Antigravity also supports Gemini Enterprise sign-in, Workforce Identity Federation, and Application Default Credentials. Configure those through Antigravity or Google Cloud as appropriate; `/agy:setup` verifies backend access without starting an agent turn by querying the machine-readable model catalog first and the agent catalog after model readiness succeeds.
 
 ## Installation
 
@@ -100,7 +102,7 @@ Safe mode is the default:
 It maps to:
 
 ```text
-agy --output-format json --mode plan --sandbox -p "<prompt>"
+agy --output-format json --mode plan --sandbox --disable-slash-commands -p "<prompt>"
 ```
 
 Explicit write mode:
@@ -112,7 +114,7 @@ Explicit write mode:
 It maps to:
 
 ```text
-agy --output-format json --mode accept-edits --sandbox -p "<prompt>"
+agy --output-format json --mode accept-edits --sandbox --disable-slash-commands -p "<prompt>"
 ```
 
 Confirmed full access:
@@ -124,7 +126,7 @@ Confirmed full access:
 Claude Code asks for confirmation before the runtime can pass:
 
 ```text
-agy --output-format json --mode accept-edits --dangerously-skip-permissions -p "<prompt>"
+agy --output-format json --mode accept-edits --dangerously-skip-permissions --disable-slash-commands -p "<prompt>"
 ```
 
 Full access is never inferred, is unavailable through `/agy:rescue`, and cannot run in the background in V1.
@@ -150,7 +152,7 @@ Use `--` before task text that begins with a dash.
 
 ## Structured output
 
-The companion requests `json` output by default, stores its metadata, and returns only the response text to preserve the normal Claude Code experience. Passing an explicit format returns the raw CLI output:
+The companion requests `json` output by default, disables Antigravity slash-command expansion so leading `/` task text remains literal, stores its metadata, and returns only the response text to preserve the normal Claude Code experience. Passing an explicit format returns the raw CLI output:
 
 ```text
 /agy:run --output-format json -- inspect this repository
@@ -159,7 +161,7 @@ The companion requests `json` output by default, stores its metadata, and return
 
 `stream-json` is validated and forwarded incrementally as typed NDJSON `init` and `step_update` events. The terminal `result` is held until the agy process exits, ensuring consumers receive exactly one final success or failure result. Each emitted event is appended directly to the private job output file, and the complete stream remains available through `/agy:result`.
 
-Explicit `json` and `stream-json` modes keep stdout machine-readable even when the task fails or is cancelled. Plugin diagnostics are written to stderr; malformed or incomplete structured output is replaced or completed with a valid `FAILED` result.
+Explicit `json` and `stream-json` modes keep stdout machine-readable even when the task fails or is cancelled. Plugin and Antigravity diagnostics are written to stderr, including warnings from successful runs; malformed or incomplete structured output is replaced or completed with a valid `FAILED` result.
 
 Use a JSON schema inline or, preferably, from a file:
 
@@ -176,7 +178,7 @@ Continue the latest recorded non-gate conversation, or a specific recorded job, 
 /agy:continue --job <job-id> -- investigate the first finding
 ```
 
-The companion does not use agy's global `-c` latest pointer because internal reviews or unrelated terminal sessions could otherwise change its meaning. A recorded job must finish before it can be selected with `--job`, preventing concurrent continuation of an active trajectory. Pass `--conversation <id>` when continuing a conversation that was not recorded by this plugin.
+The companion does not use agy's global `-c` latest pointer because internal reviews or unrelated terminal sessions could otherwise change its meaning. A recorded job must finish before it can be selected with `--job`, and a deadline-backed claim prevents two local plugin jobs from continuing the same Antigravity conversation concurrently, including from different workspaces. Pass `--conversation <id>` when continuing a conversation that was not recorded by this plugin.
 
 Request machine-readable job metadata:
 
@@ -186,7 +188,7 @@ Request machine-readable job metadata:
 
 ## Setup and experimental review gate
 
-`/agy:setup` verifies the installed executable, minimum version, json and stream-json formats, JSON schema validation, and the local state directory. Builds without the required structured features are rejected instead of using a compatibility path.
+`/agy:setup` verifies the installed executable, the minimum agy 1.1.12 version, json and stream-json formats, JSON schema validation, slash-command disabling, backend readiness through the model catalog followed by the agent catalog, and the local state directory. Task execution also enforces the minimum version before launching an agent turn. Builds without the required features are rejected instead of using a compatibility path; readiness failures are reported separately from CLI incompatibility, with the underlying authentication, authorization, network, or malformed-output diagnostic preserved when available.
 
 An optional stop-time review gate can challenge the previous Claude turn before the session stops:
 
@@ -202,6 +204,7 @@ Only high-confidence `high` or `critical` findings block stopping. The block mes
 ## Important limitations
 
 - Status and cancellation are local plugin process records, not Antigravity server APIs.
+- If a local continuation worker exits unexpectedly, its conversation remains claimed until the original print timeout plus a one-minute safety window, preventing overlap with a potentially orphaned CLI process.
 - A review result is intentionally discarded if the repository fingerprint changes before it finishes.
 - Headless permission prompts may be soft-denied. Configure required Antigravity permissions interactively rather than using full access by default.
 - The runtime uses an argv array with `shell: false`, so prompt metacharacters are not evaluated by a shell, but the `-p` prompt may be visible to local process-inspection tools while `agy` is running.
@@ -225,5 +228,5 @@ Tests use a fake `agy` executable and never invoke the real CLI:
 ```bash
 npm test
 npm run check-version
-npm run bump-version -- 0.4.0
+npm run bump-version -- 0.5.0
 ```

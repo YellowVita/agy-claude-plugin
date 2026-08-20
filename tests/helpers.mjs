@@ -15,10 +15,18 @@ export function makeTempDir(prefix = "agy-plugin-test-") {
 
 export function installFakeAgy(directory = makeTempDir("fake-agy-bin-")) {
   fs.mkdirSync(directory, { recursive: true });
-  const target = path.join(directory, process.platform === "win32" ? "agy.exe" : "agy");
-  fs.copyFileSync(FAKE_AGY_FIXTURE, target);
-  fs.chmodSync(target, 0o755);
-  return target;
+  // Node 18 does not apply syntax detection to extensionless files. Keep the
+  // fixture's module type explicit so the test executable behaves the same on
+  // every supported Node version.
+  const script = path.join(directory, "agy.mjs");
+  fs.copyFileSync(FAKE_AGY_FIXTURE, script);
+  if (process.platform === "win32") {
+    const target = path.join(directory, "agy.cmd");
+    fs.writeFileSync(target, `@echo off\r\n"${process.execPath}" "%~dp0agy.mjs" %*\r\n`, "utf8");
+    return target;
+  }
+  fs.chmodSync(script, 0o755);
+  return script;
 }
 
 export function runCompanion(args, options = {}) {

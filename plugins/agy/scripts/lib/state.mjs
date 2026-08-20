@@ -30,7 +30,7 @@ function privateMkdir(directory) {
   }
 }
 
-function resolveStateStorageRoot() {
+export function resolveStateStorageRoot() {
   const pluginData = process.env[PLUGIN_DATA_ENV];
   return pluginData ? path.join(pluginData, "state") : FALLBACK_STATE_ROOT;
 }
@@ -196,6 +196,44 @@ export function ensureStateDir(cwd) {
   privateMkdir(jobsDir);
   pruneTurnArtifactsAtStateDir(stateDir);
   return jobsDir;
+}
+
+export function probeStateWrite(cwd) {
+  const stateDir = resolveStateDir(cwd);
+  const jobsDir = path.join(stateDir, "jobs");
+  privateMkdir(stateDir);
+  privateMkdir(jobsDir);
+  for (const directory of [stateDir, jobsDir]) {
+    probeDirectoryWrite(directory);
+  }
+  return stateDir;
+}
+
+function probeDirectoryWrite(directory) {
+  const probeFile = path.join(directory, `.write-probe-${process.pid}-${randomBytes(4).toString("hex")}`);
+  let descriptor;
+  try {
+    descriptor = fs.openSync(probeFile, "wx", 0o600);
+    fs.writeFileSync(descriptor, "ok\n", "utf8");
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    fs.unlinkSync(probeFile);
+  } catch (error) {
+    if (descriptor !== undefined) {
+      try {
+        fs.closeSync(descriptor);
+      } catch {
+        // Preserve the original readiness error.
+      }
+    }
+    try {
+      fs.unlinkSync(probeFile);
+    } catch {
+      // Preserve the original readiness error.
+    }
+    throw new Error(`Plugin state is not writable: ${error.message}`);
+  }
 }
 
 function jobPath(cwd, jobId, suffix) {

@@ -12,8 +12,13 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { executeAgyTask, probeAgy } from "./lib/agy.mjs";
+import { executeAgyTask, parseDurationMs, probeAgy } from "./lib/agy.mjs";
 import { parseCommandArgs } from "./lib/args.mjs";
+import {
+  assertConversationClaim,
+  claimConversation,
+  releaseConversation
+} from "./lib/conversation-claims.mjs";
 import {
   assertRepositorySnapshot,
   buildReviewPrompt,
@@ -29,7 +34,7 @@ import {
   resolveResultJob,
   waitForJob
 } from "./lib/job-control.mjs";
-import { terminateProcessTree } from "./lib/process.mjs";
+import { terminateProcessTree, waitForProcessTreeExit } from "./lib/process.mjs";
 import {
   renderCancel,
   renderExecution,
@@ -44,6 +49,7 @@ import {
   appendLog,
   ensureStateDir,
   pruneFinishedJobs,
+  probeStateWrite,
   readConfig,
   readJob,
   readPrivateText,
@@ -64,6 +70,7 @@ import { resolveDirectory, resolveWorkspaceRoot } from "./lib/workspace.mjs";
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const PLUGIN_ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const REVIEW_SCHEMA = path.join(PLUGIN_ROOT, "schemas", "review-output.schema.json");
+const CONVERSATION_CLAIM_GRACE_MS = 60_000;
 
 function printUsage() {
   process.stdout.write(`agy-companion
@@ -339,27 +346,32 @@ async function handleSetup(argv) {
   const cwd = resolveDirectory(options.cwd ?? process.cwd());
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const actions = [];
-  if (options["enable-review-gate"]) {
-    setConfigValue(workspaceRoot, "stopReviewGate", true);
-    actions.push("Enabled the experimental stop-time review gate.");
-  } else if (options["disable-review-gate"]) {
-    setConfigValue(workspaceRoot, "stopReviewGate", false);
-    actions.push("Disabled the experimental stop-time review gate.");
-  }
   let stateDirectory = null;
   let stateWritable = false;
+  let stateDetail = null;
+  let reviewGateEnabled = false;
   try {
     stateDirectory = path.dirname(ensureStateDir(workspaceRoot));
+    probeStateWrite(workspaceRoot);
+    if (options["enable-review-gate"]) {
+      setConfigValue(workspaceRoot, "stopReviewGate", true);
+      actions.push("Enabled the experimental stop-time review gate.");
+    } else if (options["disable-review-gate"]) {
+      setConfigValue(workspaceRoot, "stopReviewGate", false);
+      actions.push("Disabled the experimental stop-time review gate.");
+    }
+    reviewGateEnabled = Boolean(readConfig(workspaceRoot).stopReviewGate);
     stateWritable = true;
-  } catch {
-    // The setup report will mark the state directory unavailable.
+  } catch (error) {
+    stateDetail = error instanceof Error ? error.message : String(error);
   }
   const result = {
     ...probeAgy(),
     workspaceRoot,
     stateDirectory,
     stateWritable,
-    reviewGateEnabled: Boolean(readConfig(workspaceRoot).stopReviewGate),
+    stateDetail,
+    reviewGateEnabled,
     actions
   };
   if (options.json) {
@@ -367,77 +379,127 @@ async function handleSetup(argv) {
   } else {
     output(renderSetup(result));
   }
-  if (!result.available) {
+  if (!result.available || !result.ready || !result.stateWritable) {
     process.exitCode = 1;
   }
 }
 
 async function executeTrackedRequest(request) {
-  const job = createTaskJob({
-    cwd: request.cwd,
-    workspaceRoot: request.workspaceRoot,
-    mode: request.mode,
-    background: request.background,
-    continuation: continuationLabel(request),
-    outputFormat: request.outputFormat,
-    outputFormatExplicit: request.outputFormatExplicit,
-    jsonSchemaRequested: Boolean(request.jsonSchema),
-    kind: request.kind ?? "task",
-    reviewKind: request.reviewKind ?? null,
-    reviewTarget: request.reviewTarget ?? null,
-    reviewSnapshotFingerprint: request.reviewSnapshot?.fingerprint ?? null,
-    stopGate: Boolean(request.stopGate)
-  });
+  let job;
+  let conversationClaim;
+  try {
+    ensureStateDir(request.workspaceRoot);
+    probeStateWrite(request.workspaceRoot);
+    job = createTaskJob({
+      cwd: request.cwd,
+      workspaceRoot: request.workspaceRoot,
+      mode: request.mode,
+      background: request.background,
+      continuation: continuationLabel(request),
+      resumeConversationId: request.conversation,
+      outputFormat: request.outputFormat,
+      outputFormatExplicit: request.outputFormatExplicit,
+      jsonSchemaRequested: Boolean(request.jsonSchema),
+      kind: request.kind ?? "task",
+      reviewKind: request.reviewKind ?? null,
+      reviewTarget: request.reviewTarget ?? null,
+      reviewSnapshotFingerprint: request.reviewSnapshot?.fingerprint ?? null,
+      stopGate: Boolean(request.stopGate)
+    });
+    const conversationClaimExpiresAt = request.conversation
+      ? new Date(Date.now() + parseDurationMs(request.printTimeout) + CONVERSATION_CLAIM_GRACE_MS).toISOString()
+      : null;
+    request.conversationClaimExpiresAt = conversationClaimExpiresAt;
+    job.conversationClaimExpiresAt = conversationClaimExpiresAt;
+    conversationClaim = claimConversation(request.workspaceRoot, request.conversation, job.id, {
+      expiresAt: conversationClaimExpiresAt
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (request.outputFormatExplicit && ["json", "stream-json"].includes(request.outputFormat)) {
+      output(createStructuredFailureOutput(request.outputFormat, { message }));
+      process.stderr.write(`${message}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    throw error;
+  }
 
   if (request.background) {
-    writeJob(request.workspaceRoot, job);
-    writeRequest(request.workspaceRoot, job.id, request);
-    appendLog(request.workspaceRoot, job.id, "Queued for background execution.");
-
-    let child;
+    let handedOff = false;
     try {
-      child = spawnDetachedWorker(request.cwd, job.id);
-    } catch (error) {
-      removeRequest(request.workspaceRoot, job.id);
-      writeJob(request.workspaceRoot, {
-        ...job,
-        status: "failed",
-        phase: "failed",
-        completedAt: nowIso(),
-        exitStatus: 1,
-        errorMessage: error instanceof Error ? error.message : String(error)
-      });
-      throw error;
-    }
+      writeJob(request.workspaceRoot, job);
+      writeRequest(request.workspaceRoot, job.id, request);
+      appendLog(request.workspaceRoot, job.id, "Queued for background execution.");
 
-    const current = readJob(request.workspaceRoot, job.id);
-    if (current && ["queued", "running"].includes(current.status)) {
-      writeJob(request.workspaceRoot, { ...current, pid: child.pid ?? current.pid });
+      let child;
+      try {
+        child = spawnDetachedWorker(request.cwd, job.id);
+        handedOff = true;
+      } catch (error) {
+        removeRequest(request.workspaceRoot, job.id);
+        writeJob(request.workspaceRoot, {
+          ...job,
+          status: "failed",
+          phase: "failed",
+          completedAt: nowIso(),
+          exitStatus: 1,
+          errorMessage: error instanceof Error ? error.message : String(error)
+        });
+        throw error;
+      }
+
+      const current = readJob(request.workspaceRoot, job.id);
+      if (current && ["queued", "running"].includes(current.status)) {
+        writeJob(request.workspaceRoot, { ...current, pid: child.pid ?? current.pid });
+      }
+      pruneFinishedJobs(request.workspaceRoot);
+      output(renderQueued({ ...job, pid: child.pid ?? null }));
+      return;
+    } finally {
+      if (conversationClaim && !handedOff) {
+        releaseConversation(request.workspaceRoot, request.conversation, job.id);
+      }
     }
-    pruneFinishedJobs(request.workspaceRoot);
-    output(renderQueued({ ...job, pid: child.pid ?? null }));
-    return;
   }
 
   const streamToConsole = request.outputFormat === "stream-json";
-  const outcome = await runTrackedJob(job, async (io) => ({
-    ...(await executeRequest(request, {
-      onStdout: streamToConsole
-        ? (chunk) => {
-            io.onStdout(chunk);
-            output(chunk);
-          }
-        : undefined,
-      onStderr: streamToConsole ? io.onStderr : undefined,
-      onProgress: io.onProgress
-    })),
-    stdoutStreamed: streamToConsole
-  }));
+  let outcome;
+  try {
+    outcome = await runTrackedJob(job, async (io) => {
+      let stderrForwarded = false;
+      const execution = await executeRequest(request, {
+        onStdout: streamToConsole
+          ? (chunk) => {
+              io.onStdout(chunk);
+              output(chunk);
+            }
+          : undefined,
+        onStderr: (chunk) => {
+          stderrForwarded = true;
+          io.onStderr(chunk);
+          process.stderr.write(chunk);
+        },
+        onProgress: io.onProgress
+      });
+      return {
+        ...execution,
+        stdoutStreamed: streamToConsole,
+        stderrForwarded
+      };
+    });
+  } finally {
+    if (conversationClaim) {
+      releaseConversation(request.workspaceRoot, request.conversation, job.id);
+    }
+  }
   if (outcome.job.status !== "completed" && usesRawStructuredOutput(outcome.job)) {
     if (!outcome.execution.stdoutStreamed) {
       output(outcome.execution.stdout);
     }
-    process.stderr.write(renderFailure(outcome.job, "", outcome.execution.stderr));
+    process.stderr.write(
+      renderFailure(outcome.job, "", outcome.execution.stderrForwarded ? "" : outcome.execution.stderr)
+    );
   } else if (request.reviewJson && outcome.job.status === "completed") {
     outputJson({
       jobId: outcome.job.id,
@@ -445,7 +507,12 @@ async function executeTrackedRequest(request) {
       review: outcome.execution.structured?.structuredOutput ?? null
     });
   } else {
-    output(renderExecution(outcome.job, outcome.execution));
+    output(
+      renderExecution(outcome.job, {
+        ...outcome.execution,
+        stderr: outcome.execution.stderrForwarded ? "" : outcome.execution.stderr
+      })
+    );
   }
   if (outcome.job.status !== "completed") {
     process.exitCode = outcome.execution.exitStatus || 1;
@@ -477,22 +544,28 @@ async function handleTaskWorker(argv) {
   if (!job) {
     throw new Error(`No stored Antigravity job found for ${options["job-id"]}.`);
   }
-  const request = readRequest(workspaceRoot, job.id);
-  removeRequest(workspaceRoot, job.id);
-  if (job.status === "cancelled") {
-    return;
+  try {
+    const request = readRequest(workspaceRoot, job.id);
+    removeRequest(workspaceRoot, job.id);
+    if (job.status === "cancelled") {
+      return;
+    }
+    if (!request) {
+      throw new Error(`Background job ${job.id} is missing its request payload.`);
+    }
+    await runTrackedJob({ ...job, cwd, workspaceRoot, background: true }, (io) => {
+      assertConversationClaim(workspaceRoot, job.resumeConversationId, job.id, {
+        expiresAt: request.conversationClaimExpiresAt
+      });
+      return executeRequest(request, {
+        onStdout: request.outputFormat === "stream-json" ? io.onStdout : undefined,
+        onStderr: request.outputFormat === "stream-json" ? io.onStderr : undefined,
+        onProgress: io.onProgress
+      });
+    });
+  } finally {
+    releaseConversation(workspaceRoot, job.resumeConversationId, job.id);
   }
-  if (!request) {
-    throw new Error(`Background job ${job.id} is missing its request payload.`);
-  }
-
-  await runTrackedJob({ ...job, cwd, workspaceRoot, background: true }, (io) =>
-    executeRequest(request, {
-      onStdout: request.outputFormat === "stream-json" ? io.onStdout : undefined,
-      onStderr: request.outputFormat === "stream-json" ? io.onStderr : undefined,
-      onProgress: io.onProgress
-    })
-  );
 }
 
 async function handleStatus(argv) {
@@ -551,17 +624,34 @@ function handleResult(argv) {
     process.stderr.write(renderFailure(job, "", stderr));
     return;
   }
+  if (job.status === "completed" && stderr) {
+    process.stderr.write(stderr);
+  }
   output(renderStoredResult(job, stdout, stderr));
 }
 
-function handleCancel(argv) {
+async function handleCancel(argv) {
   const { options, positionals } = parseCommandArgs(argv, {
     valueOptions: ["cwd"]
   });
   const reference = requireSinglePositional(positionals, "job reference");
   const cwd = resolveDirectory(options.cwd ?? process.cwd());
   const { workspaceRoot, job } = resolveCancelableJob(cwd, reference);
-  const outcome = terminateProcessTree(job.pid);
+  const terminatingPid = job.pid;
+  const outcome = terminateProcessTree(terminatingPid);
+
+  const stopped = await waitForProcessTreeExit(terminatingPid, { timeoutMs: 2_000 });
+  if (!stopped) {
+    appendLog(
+      workspaceRoot,
+      job.id,
+      "Cancellation failed because the process tree did not stop; the job and conversation claim remain active."
+    );
+    throw new Error(
+      `Could not stop process tree ${terminatingPid} for job ${job.id}. The job and conversation claim remain active.`
+    );
+  }
+
   removeRequest(workspaceRoot, job.id);
 
   const stderr = readPrivateText(job.stderrFile);
@@ -585,7 +675,8 @@ function handleCancel(argv) {
     exitStatus: null,
     errorMessage: "Cancelled by user."
   });
-  appendLog(workspaceRoot, job.id, "Cancelled by user.");
+  releaseConversation(workspaceRoot, job.resumeConversationId, job.id);
+  appendLog(workspaceRoot, job.id, "Cancelled by user; process tree stopped.");
   output(renderCancel(cancelled, outcome));
 }
 
@@ -619,7 +710,7 @@ async function main() {
       handleResult(argv);
       break;
     case "cancel":
-      handleCancel(argv);
+      await handleCancel(argv);
       break;
     default:
       throw new Error(`Unknown subcommand: ${subcommand}`);

@@ -44,10 +44,11 @@ test("setup reports the resolved fake agy executable and version", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Antigravity Setup/);
   assert.match(result.stdout, new RegExp(fakeAgy.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.match(result.stdout, /agy 1\.1\.8-fake/);
-  assert.match(result.stdout, /interactive TTY/);
-  assert.match(result.stdout, /\/dev\/tty/);
-  assert.match(result.stdout, /separate terminal window/);
+  assert.match(result.stdout, /agy 1\.1\.12-fake/);
+  assert.match(result.stdout, /Backend readiness: ready/);
+  assert.match(result.stdout, /Models: 1 available \(fake-model\)/);
+  assert.match(result.stdout, /Agents: 1 available \(fake-agent\)/);
+  assert.doesNotMatch(result.stdout, /interactive TTY/);
 });
 
 test("setup rejects agy builds that do not expose required structured features", () => {
@@ -60,20 +61,238 @@ test("setup rejects agy builds that do not expose required structured features",
   assert.match(result.stdout, /JSON schema validation/);
 });
 
+test("setup requires slash-command disabling support", () => {
+  const { env } = fixture();
+  const result = runCompanion(["setup"], {
+    env: {
+      ...env,
+      FAKE_AGY_HELP: "Usage: agy -p <prompt> --output-format <text|json|stream-json> --json-schema <schema>\n"
+    }
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /slash-command disabling/);
+});
+
 test("setup JSON reports writable state and toggles the experimental review gate", () => {
   const { workspace, env } = fixture();
   let result = runCompanion(["setup", "--cwd", workspace, "--json", "--enable-review-gate"], { env });
   assert.equal(result.status, 0, result.stderr);
   let report = JSON.parse(result.stdout);
   assert.equal(report.available, true);
+  assert.equal(report.ready, true);
   assert.equal(report.stateWritable, true);
   assert.equal(report.reviewGateEnabled, true);
   assert.equal(report.capabilities["stream-json output"], true);
+  assert.equal(report.catalogs.models.entries[0].id, "fake-model");
+  assert.equal(report.catalogs.agents.entries[0].id, "fake-agent");
 
   result = runCompanion(["setup", "--cwd", workspace, "--json", "--disable-review-gate"], { env });
   assert.equal(result.status, 0, result.stderr);
   report = JSON.parse(result.stdout);
   assert.equal(report.reviewGateEnabled, false);
+});
+
+test("setup fails when the plugin state directory is not writable", () => {
+  const { workspace, env } = fixture();
+  const blockedPluginData = path.join(makeTempDir("agy-blocked-state-"), "not-a-directory");
+  fs.writeFileSync(blockedPluginData, "blocked\n");
+  const result = runCompanion(["setup", "--cwd", workspace, "--json"], {
+    env: { ...env, CLAUDE_PLUGIN_DATA: blockedPluginData }
+  });
+  assert.notEqual(result.status, 0);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.available, true);
+  assert.equal(report.ready, true);
+  assert.equal(report.stateWritable, false);
+  assert.equal(report.stateDirectory, null);
+  assert.match(report.stateDetail, /not a directory|ENOTDIR/i);
+});
+
+test("text setup reports CLI and state failures together", () => {
+  const { workspace, env } = fixture();
+  const blockedPluginData = path.join(makeTempDir("agy-combined-setup-failure-"), "not-a-directory");
+  fs.writeFileSync(blockedPluginData, "blocked\n");
+  const result = runCompanion(["setup", "--cwd", workspace], {
+    env: {
+      ...env,
+      AGY_PATH: path.join(workspace, "missing-agy"),
+      CLAUDE_PLUGIN_DATA: blockedPluginData
+    }
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /AGY_PATH is not an executable file/);
+  assert.match(result.stdout, /State: unavailable \(not writable\)/);
+  assert.match(result.stdout, /State error:.*(?:not a directory|ENOTDIR)/i);
+});
+
+test("state preflight failures preserve explicit structured stdout", () => {
+  for (const outputFormat of ["json", "stream-json"]) {
+    const { workspace, env } = fixture();
+    const blockedPluginData = path.join(makeTempDir("agy-blocked-task-state-"), "not-a-directory");
+    fs.writeFileSync(blockedPluginData, "blocked\n");
+    const result = runCompanion(
+      ["task", "--cwd", workspace, "--output-format", outputFormat, "--", "inspect"],
+      { env: { ...env, CLAUDE_PLUGIN_DATA: blockedPluginData } }
+    );
+    assert.equal(result.status, 1);
+    if (outputFormat === "json") {
+      assert.equal(JSON.parse(result.stdout).status, "FAILED");
+    } else {
+      const event = JSON.parse(result.stdout.trim());
+      assert.equal(event.event, "result");
+      assert.equal(event.result.status, "FAILED");
+    }
+    assert.match(result.stderr, /not a directory|ENOTDIR/i);
+  }
+});
+
+test("setup and task preflight verify the jobs storage directory", () => {
+  const { workspace, pluginData, env } = fixture();
+  const initial = runCompanion(["setup", "--cwd", workspace, "--json"], { env });
+  assert.equal(initial.status, 0, initial.stderr);
+  const stateRoot = path.join(pluginData, "state");
+  const workspaceState = fs
+    .readdirSync(stateRoot, { withFileTypes: true })
+    .find((entry) => entry.isDirectory() && entry.name !== "conversation-claims");
+  assert.ok(workspaceState);
+  const jobsDir = path.join(stateRoot, workspaceState.name, "jobs");
+  fs.rmSync(jobsDir, { recursive: true });
+  fs.writeFileSync(jobsDir, "blocked\n");
+
+  const setup = runCompanion(["setup", "--cwd", workspace, "--json"], { env });
+  assert.equal(setup.status, 1);
+  assert.equal(JSON.parse(setup.stdout).stateWritable, false);
+
+  const task = runCompanion(
+    ["task", "--cwd", workspace, "--output-format", "json", "--", "inspect"],
+    { env }
+  );
+  assert.equal(task.status, 1);
+  assert.equal(JSON.parse(task.stdout).status, "FAILED");
+});
+
+test("claim storage failures preserve explicit structured stdout", () => {
+  const { workspace, pluginData, env } = fixture();
+  const stateRoot = path.join(pluginData, "state");
+  fs.mkdirSync(stateRoot, { recursive: true });
+  fs.writeFileSync(path.join(stateRoot, "conversation-claims"), "blocked\n");
+
+  const result = runCompanion(
+    [
+      "task",
+      "--cwd",
+      workspace,
+      "--conversation",
+      "blocked-claim-conversation",
+      "--output-format",
+      "json",
+      "--",
+      "inspect"
+    ],
+    { env }
+  );
+  assert.equal(result.status, 1);
+  assert.equal(JSON.parse(result.stdout).status, "FAILED");
+  assert.match(result.stderr, /not a directory|EEXIST|ENOTDIR/i);
+});
+
+test("setup reports authentication failures separately from CLI compatibility", () => {
+  const { env } = fixture();
+  const result = runCompanion(["setup"], {
+    env: {
+      ...env,
+      FAKE_AGY_MODELS_STDOUT: `${JSON.stringify({ status: "ERROR", error: "authentication required" })}\n`,
+      FAKE_AGY_MODELS_EXIT: "1"
+    }
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /Backend readiness: not ready/);
+  assert.match(result.stdout, /Readiness error: authentication required/);
+  assert.match(result.stdout, /interactive TTY/);
+  assert.doesNotMatch(result.stdout, /unavailable or incompatible/);
+});
+
+test("setup reports catalog network and JSON failures without corrupting JSON output", () => {
+  const network = fixture();
+  let result = runCompanion(["setup", "--json"], {
+    env: {
+      ...network.env,
+      FAKE_AGY_MODELS_STDOUT: "",
+      FAKE_AGY_MODELS_STDERR: "network unavailable\n",
+      FAKE_AGY_MODELS_EXIT: "7"
+    }
+  });
+  assert.equal(result.status, 1);
+  let report = JSON.parse(result.stdout);
+  assert.equal(report.available, true);
+  assert.equal(report.ready, false);
+  assert.match(report.readinessDetail, /network unavailable/);
+  assert.equal(result.stderr, "");
+
+  const malformed = fixture();
+  result = runCompanion(["setup", "--json"], {
+    env: {
+      ...malformed.env,
+      FAKE_AGY_MODELS_STDOUT: "not-json\n",
+      FAKE_AGY_MODELS_STDERR: "Fetching available models...\n"
+    }
+  });
+  assert.equal(result.status, 1);
+  report = JSON.parse(result.stdout);
+  assert.equal(report.ready, false);
+  assert.match(report.readinessDetail, /invalid JSON/);
+  assert.equal(result.stderr, "");
+});
+
+test("setup keeps successful catalog progress off machine-readable stdout", () => {
+  const { env } = fixture();
+  const result = runCompanion(["setup", "--json"], {
+    env: {
+      ...env,
+      FAKE_AGY_MODELS_STDERR: "Fetching available models...\n",
+      FAKE_AGY_AGENTS_STDERR: "Fetching available agents...\n"
+    }
+  });
+  assert.equal(result.status, 0);
+  assert.equal(JSON.parse(result.stdout).ready, true);
+  assert.equal(result.stderr, "");
+});
+
+test("setup reports agent catalog failures after model readiness succeeds", () => {
+  const { env } = fixture();
+  const result = runCompanion(["setup", "--json"], {
+    env: {
+      ...env,
+      FAKE_AGY_AGENTS_STDOUT: `${JSON.stringify({ status: "ERROR", error: "agent catalog unavailable" })}\n`,
+      FAKE_AGY_AGENTS_EXIT: "1"
+    }
+  });
+  assert.equal(result.status, 1);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.available, true);
+  assert.equal(report.ready, false);
+  assert.equal(report.catalogs.models.ready, true);
+  assert.equal(report.catalogs.agents.ready, false);
+  assert.match(report.readinessDetail, /agent catalog unavailable/);
+});
+
+test("setup is not ready when the model catalog is empty", () => {
+  const { env } = fixture();
+  const result = runCompanion(["setup", "--json"], {
+    env: {
+      ...env,
+      FAKE_AGY_MODELS_STDOUT: `${JSON.stringify({
+        status: "SUCCESS",
+        command: { name: "models", data: { models: [] } }
+      })}\n`
+    }
+  });
+  assert.equal(result.status, 1);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.available, true);
+  assert.equal(report.ready, false);
+  assert.deepEqual(report.catalogs.models.entries, []);
+  assert.match(report.readinessDetail, /no available models/i);
 });
 
 test("setup lazily prunes expired turn baselines and evidence", () => {
@@ -121,6 +340,7 @@ test("safe mode safely forwards the exact prompt with shell disabled semantics",
     "--mode",
     "plan",
     "--sandbox",
+    "--disable-slash-commands",
     "-p",
     prompt
   ]);
@@ -143,9 +363,32 @@ test("single raw slash-command arguments preserve the prompt after --", () => {
     "--mode",
     "accept-edits",
     "--sandbox",
+    "--disable-slash-commands",
     "-p",
     prompt
   ]);
+});
+
+test("leading slash prompts remain literal agy prompts", () => {
+  for (const prompt of ["/help", "/clear now", "/my-skill preserve  two spaces"]) {
+    const { workspace, record, env } = fixture();
+    const result = runCompanion(["task", "--cwd", workspace, "--", prompt], { env });
+    assert.equal(result.status, 0, result.stderr);
+    const captured = readRecord(record);
+    assert.equal(captured.prompt, prompt);
+    assert.deepEqual(captured.argv, [
+      "--print-timeout",
+      "5m0s",
+      "--output-format",
+      "json",
+      "--mode",
+      "plan",
+      "--sandbox",
+      "--disable-slash-commands",
+      "-p",
+      prompt
+    ]);
+  }
 });
 
 test("write and confirmed full-access modes map to distinct agy flags", () => {
@@ -243,6 +486,7 @@ test("runtime forwards validated model, agent, effort, directory, and project co
     extraB,
     "--project",
     "project-z",
+    "--disable-slash-commands",
     "-p",
     "inspect"
   ]);
@@ -341,6 +585,36 @@ test("explicit json output returns the raw envelope and records structured metad
   assert.equal(JSON.parse(jsonStatus.stdout).job.conversationId, "fake-conversation-123");
 });
 
+test("successful foreground tasks expose persisted agy stderr without contaminating stdout", () => {
+  for (const outputFormat of [null, "json", "stream-json"]) {
+    const { workspace, pluginData, env } = fixture();
+    const args = ["task", "--cwd", workspace];
+    if (outputFormat) {
+      args.push("--output-format", outputFormat);
+    }
+    args.push("--", "inspect");
+
+    const result = runCompanion(args, {
+      env: { ...env, FAKE_AGY_STDERR: `agy ${outputFormat ?? "default"} diagnostic\n` }
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stderr, `agy ${outputFormat ?? "default"} diagnostic\n`);
+    if (outputFormat === "json") {
+      assert.equal(JSON.parse(result.stdout).status, "SUCCESS");
+    } else if (outputFormat === "stream-json") {
+      for (const line of result.stdout.trim().split(/\r?\n/)) {
+        JSON.parse(line);
+      }
+    } else {
+      assert.equal(result.stdout, "fake response\n");
+    }
+
+    const job = readOnlyJob(pluginData);
+    assert.equal(fs.readFileSync(job.stderrFile, "utf8"), result.stderr);
+  }
+});
+
 test("json schema supports inline JSON and renders structured_output by default", () => {
   const { workspace, record, env } = fixture();
   const schema = '{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}';
@@ -432,6 +706,7 @@ test("explicit json failures keep stdout machine-readable and send diagnostics t
   assert.equal(JSON.parse(result.stdout).status, "FAILED");
   assert.doesNotMatch(result.stdout, /Antigravity Task Failed/);
   assert.match(result.stderr, /Antigravity Task Failed/);
+  assert.equal(result.stderr.match(/specific failure/g)?.length, 1);
 
   const job = readOnlyJob(pluginData);
   const stored = runCompanion(["result", "--cwd", workspace, job.id], { env });
@@ -504,6 +779,7 @@ test("stream-json failures emit only valid NDJSON and append a terminal failure 
   assert.equal(events.at(-1).result.status, "FAILED");
   assert.doesNotMatch(result.stdout, /Antigravity Task Failed/);
   assert.match(result.stderr, /Antigravity Task Failed/);
+  assert.equal(result.stderr.match(/stream failure/g)?.length, 1);
 
   const job = readOnlyJob(pluginData);
   assert.equal(fs.readFileSync(job.stdoutFile, "utf8"), result.stdout);
@@ -596,8 +872,9 @@ test("failure preserves stderr, partial stdout, exit status, and stored result",
   });
   assert.equal(result.status, 9);
   assert.match(result.stdout, /Antigravity Task Failed/);
-  assert.match(result.stdout, /specific failure/);
+  assert.doesNotMatch(result.stdout, /specific failure/);
   assert.match(result.stdout, /partial exact/);
+  assert.equal(result.stderr.match(/specific failure/g)?.length, 1);
   const jobId = extractJobId(result.stdout);
 
   const stored = runCompanion(["result", "--cwd", workspace, jobId], { env });
@@ -605,6 +882,15 @@ test("failure preserves stderr, partial stdout, exit status, and stored result",
   assert.match(stored.stdout, /Exit: 9/);
   assert.match(stored.stdout, /specific failure/);
   assert.match(stored.stdout, /partial exact/);
+});
+
+test("preflight diagnostics are rendered once", () => {
+  const { workspace, env } = fixture();
+  const result = runCompanion(["task", "--cwd", workspace, "--effort", "extreme", "--", "invalid"], {
+    env
+  });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout.match(/Unsupported effort/g)?.length, 1);
 });
 
 test("invalid options and missing agy fail without launching a task", () => {
@@ -677,9 +963,26 @@ test("invalid options and missing agy fail without launching a task", () => {
   assert.match(result.stdout, /AGY_PATH is not an executable file/);
 });
 
-test("setup rejects agy versions older than 1.1.8", () => {
+test("setup rejects agy 1.1.11", () => {
   const { env } = fixture();
-  const result = runCompanion(["setup"], { env: { ...env, FAKE_AGY_VERSION: "agy 1.1.7\n" } });
+  const result = runCompanion(["setup"], { env: { ...env, FAKE_AGY_VERSION: "agy 1.1.11\n" } });
   assert.equal(result.status, 1);
-  assert.match(result.stdout, /agy 1\.1\.8 or newer is required/);
+  assert.match(result.stdout, /agy 1\.1\.12 or newer is required/);
+});
+
+test("setup accepts agy 1.1.12", () => {
+  const { env } = fixture();
+  const result = runCompanion(["setup"], { env: { ...env, FAKE_AGY_VERSION: "agy 1.1.12\n" } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /agy 1\.1\.12/);
+});
+
+test("task execution rejects agy versions that cannot honor headless mode controls", () => {
+  const { workspace, record, env } = fixture();
+  const result = runCompanion(["task", "--cwd", workspace, "--", "inspect"], {
+    env: { ...env, FAKE_AGY_VERSION: "agy 1.1.11\n" }
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /agy 1\.1\.12 or newer is required/);
+  assert.equal(fs.existsSync(record), false);
 });

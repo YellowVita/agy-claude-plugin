@@ -4,7 +4,7 @@
 // Copyright 2026 OpenAI
 // Modifications Copyright 2026 Antigravity Plugin Contributors.
 
-import { isProcessRunning } from "./process.mjs";
+import { isProcessRunning, isProcessTreeRunning } from "./process.mjs";
 import {
   listJobs,
   readJob,
@@ -19,6 +19,10 @@ import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
 const FINISHED_STATUSES = new Set(["completed", "failed", "cancelled"]);
+
+function isJobProcessRunning(job) {
+  return job.background ? isProcessTreeRunning(job.pid) : isProcessRunning(job.pid);
+}
 
 function persistStructuredFailure(job, message) {
   if (!job.outputFormatExplicit || !["json", "stream-json"].includes(job.outputFormat)) {
@@ -43,7 +47,7 @@ function refreshStaleJobs(workspaceRoot) {
       refreshed.push(job);
       continue;
     }
-    if (isProcessRunning(job.pid)) {
+    if (isJobProcessRunning(job)) {
       refreshed.push(job);
       continue;
     }

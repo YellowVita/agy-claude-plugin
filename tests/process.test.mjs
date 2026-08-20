@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 
 import {
   isProcessRunning,
+  isProcessTreeRunning,
   runCommandStreaming,
-  terminateProcessTree
+  terminateProcessTree,
+  waitForProcessTreeExit
 } from "../plugins/agy/scripts/lib/process.mjs";
 
 test("runCommandStreaming forwards chunks while retaining the complete output", async () => {
@@ -107,6 +109,18 @@ test("terminateProcessTree targets a POSIX process group first", () => {
   assert.equal(outcome.method, "process-group");
 });
 
+test("terminateProcessTree can force-kill a POSIX process group", () => {
+  const calls = [];
+  terminateProcessTree(4321, {
+    platform: "linux",
+    signal: "SIGKILL",
+    killImpl(pid, signal) {
+      calls.push({ pid, signal });
+    }
+  });
+  assert.deepEqual(calls, [{ pid: -4321, signal: "SIGKILL" }]);
+});
+
 test("isProcessRunning distinguishes live, missing, and permission-protected processes", () => {
   assert.equal(isProcessRunning(100, () => {}), true);
   assert.equal(
@@ -124,5 +138,39 @@ test("isProcessRunning distinguishes live, missing, and permission-protected pro
       throw error;
     }),
     true
+  );
+});
+
+test("process-tree probes use the POSIX process group and settle for missing processes", async () => {
+  const calls = [];
+  assert.equal(
+    isProcessTreeRunning(100, {
+      platform: "linux",
+      killImpl(pid, signal) {
+        calls.push({ pid, signal });
+      }
+    }),
+    true
+  );
+  assert.deepEqual(calls, [{ pid: -100, signal: 0 }]);
+
+  const missing = () => {
+    const error = new Error("missing");
+    error.code = "ESRCH";
+    throw error;
+  };
+  assert.equal(isProcessTreeRunning(100, { platform: "linux", killImpl: missing }), false);
+  assert.equal(await waitForProcessTreeExit(100, { platform: "linux", killImpl: missing }), true);
+});
+
+test("process-tree waits report a live process after the timeout", async () => {
+  assert.equal(
+    await waitForProcessTreeExit(100, {
+      platform: "linux",
+      killImpl() {},
+      timeoutMs: 1,
+      pollIntervalMs: 1
+    }),
+    false
   );
 });

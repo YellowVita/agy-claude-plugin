@@ -117,8 +117,8 @@ For a cross-model code review, have agy read a diff file and return structured f
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-task.mjs" --mode read \
   --add-dir <scratchpad dir> \
-  --json-schema "${CLAUDE_PLUGIN_ROOT}/schemas/review-output.schema.json" \
+  --json-schema "${CLAUDE_PLUGIN_ROOT}/schemas/review-result.schema.json" \
   --prompt-file <prompt-file>
 ```
 
-The output is JSON with `verdict` (`approve` or `needs-attention`), `summary`, `findings` (severity, title, body, file, line range, confidence, recommendation), and `next_steps`. Verify each finding against the code before presenting it, and do not apply fixes unless the user asks.
+The output is JSON with `outcome` (`no-issues` or `issues-found`), `overview`, `issues` (each with `severity` blocker/major/minor, `path`, `line`, optional `end_line`, `problem`, `evidence`, `fix`), and `unchecked` (what agy could not verify). Verify each finding against the code before presenting it, and do not apply fixes unless the user asks.

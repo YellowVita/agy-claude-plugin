@@ -18,10 +18,10 @@ Steps:
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-task.mjs" --mode read \
   --add-dir <scratchpad dir> \
-  --json-schema "${CLAUDE_PLUGIN_ROOT}/schemas/review-output.schema.json" \
+  --json-schema "${CLAUDE_PLUGIN_ROOT}/schemas/review-result.schema.json" \
   --prompt-file <prompt-file>
 ```
 
-5. Check the footer's `permission=`; read mode is only enforced when it is `request-review` or `strict`, so if `git status` shows unexpected changes afterwards, tell the user. Verify every finding against the code (read the cited file and lines) before presenting it. Drop or flag findings you cannot confirm. Present the verdict, the confirmed findings ordered by severity with file and line, and say the review came from Antigravity.
+5. Check the footer's `permission=`; read mode is only enforced when it is `request-review` or `strict`, so if `git status` shows unexpected changes afterwards, tell the user. Verify every finding against the code (read the cited file and lines) before presenting it. Drop or flag findings you cannot confirm. Present the outcome, the confirmed issues ordered by severity with path and line, anything listed under `unchecked`, and say the review came from Antigravity.
 
 This command is review-only. Never fix findings or apply patches unless the user asks afterwards.

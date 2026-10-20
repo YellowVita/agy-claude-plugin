@@ -4,6 +4,7 @@
 
 Breaking restructure: the plugin is now a model-invocable skill plus one thin wrapper script instead of human slash commands, a forwarding subagent, and hooks.
 
+- Replaced the last files adapted from the OpenAI Codex plugin with original ones: a new review result schema (`schemas/review-result.schema.json`: `outcome`, `overview`, `issues`, `unchecked`) and a rewritten `scripts/bump-version.mjs`. NOTICE no longer carries third-party attribution.
 - Added the `antigravity` skill so Claude decides on its own when to delegate investigations, exploration, second opinions, and cross-model reviews to agy, and how to write self-contained prompts, verify results, and report them as coming from Antigravity.
 - Added the `agy-task.mjs` wrapper (`--mode read|write|auto`, `--no-sandbox`, `--conversation`, `--json-schema`, `--timeout`, `--prompt-file`, `--check`, and more) with a status footer and distinct exit codes (0 ok, 4 partial, 3 agy error, 126 cannot start, 127 not installed, 129/130/143 signal).
 - Long and parallel work now uses Claude's background Bash (`run_in_background`) with completion notifications and TaskStop for cancellation, replacing the plugin's own job tracking.

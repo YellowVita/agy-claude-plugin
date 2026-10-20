@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Antigravity code review result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome", "overview", "issues", "unchecked"],
+  "properties": {
+    "outcome": {
+      "type": "string",
+      "enum": ["no-issues", "issues-found"],
+      "description": "issues-found when at least one issue is reported."
+    },
+    "overview": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Two or three sentences on what the change does and how sound it is."
+    },
+    "issues": {
+      "type": "array",
+      "description": "Real defects only, most severe first. Empty when outcome is no-issues.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "path", "line", "problem", "evidence", "fix"],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["blocker", "major", "minor"],
+            "description": "blocker: must not ship; major: likely bug or risk; minor: worth fixing, low impact."
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repository-relative file path."
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "First line the issue refers to."
+          },
+          "end_line": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Last line, when the issue spans several lines."
+          },
+          "problem": {
+            "type": "string",
+            "minLength": 1,
+            "description": "What is wrong, in one or two sentences."
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The input, state, or code path that makes it fail."
+          },
+          "fix": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The smallest change that resolves it."
+          }
+        }
+      }
+    },
+    "unchecked": {
+      "type": "array",
+      "description": "Things the reviewer could not verify, such as missing context or behavior that needs a run.",
+      "items": { "type": "string" }
+    }
+  }
+}

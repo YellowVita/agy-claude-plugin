@@ -1,109 +1,138 @@
 #!/usr/bin/env node
 
 // SPDX-License-Identifier: Apache-2.0
-// Portions adapted from the OpenAI Codex Plugin for Claude Code:
-// https://github.com/openai/codex-plugin-cc
-// Copyright 2026 OpenAI
-// Modifications Copyright 2026 Antigravity Plugin Contributors.
+//
+// Keeps the release version identical in every manifest that carries it.
+//
+//   node scripts/bump-version.mjs <version>   write <version> to every field
+//   node scripts/bump-version.mjs --check     exit 1 if the fields disagree
+//
+// --root <dir> points the script at another checkout (the tests use this).
 
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
-const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
-const TARGETS = [
-  ["package.json", [["version"]]],
-  ["package-lock.json", [["version"], ["packages", "", "version"]]],
-  ["plugins/agy/.claude-plugin/plugin.json", [["version"]]],
-  [".claude-plugin/marketplace.json", [["metadata", "version"], ["plugins", 0, "version"]]]
+// Each entry names one version field: the file it lives in, a label for
+// messages, and how to read and write it on the parsed JSON.
+const FIELDS = [
+  {
+    file: "package.json",
+    label: "version",
+    get: (json) => json.version,
+    set: (json, version) => { json.version = version; }
+  },
+  {
+    file: "package-lock.json",
+    label: "version",
+    get: (json) => json.version,
+    set: (json, version) => { json.version = version; }
+  },
+  {
+    file: "package-lock.json",
+    label: 'packages[""].version',
+    get: (json) => json.packages?.[""]?.version,
+    set: (json, version) => { json.packages[""].version = version; }
+  },
+  {
+    file: "plugins/agy/.claude-plugin/plugin.json",
+    label: "version",
+    get: (json) => json.version,
+    set: (json, version) => { json.version = version; }
+  },
+  {
+    file: ".claude-plugin/marketplace.json",
+    label: "metadata.version",
+    get: (json) => json.metadata?.version,
+    set: (json, version) => { json.metadata.version = version; }
+  },
+  {
+    file: ".claude-plugin/marketplace.json",
+    label: "plugins[agy].version",
+    get: (json) => json.plugins?.find((plugin) => plugin.name === "agy")?.version,
+    set: (json, version) => { json.plugins.find((plugin) => plugin.name === "agy").version = version; }
+  }
 ];
 
-function readJson(root, file) {
-  return JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
+function usage() {
+  return "Usage: bump-version.mjs <version> | --check [--root <dir>]";
 }
 
-function getAtPath(value, keys) {
-  return keys.reduce((current, key) => current?.[key], value);
-}
-
-function setAtPath(value, keys, version) {
-  let current = value;
-  for (const key of keys.slice(0, -1)) {
-    if (!current?.[key] || typeof current[key] !== "object") {
-      throw new Error(`Missing version container at ${keys.join(".")}.`);
-    }
-    current = current[key];
-  }
-  current[keys.at(-1)] = version;
-}
-
-function parseArgs(argv) {
-  const options = { check: false, root: process.cwd(), version: null };
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
+function parseArgs(args) {
+  let root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  let check = false;
+  let version;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
     if (arg === "--check") {
-      options.check = true;
+      check = true;
     } else if (arg === "--root") {
-      options.root = argv[++index];
-      if (!options.root) {
-        throw new Error("--root requires a directory.");
-      }
-    } else if (arg.startsWith("-")) {
-      throw new Error(`Unknown option: ${arg}`);
-    } else if (options.version) {
-      throw new Error(`Unexpected extra argument: ${arg}`);
+      if (!args[i + 1]) throw new Error("--root needs a directory.");
+      root = path.resolve(args[++i]);
+    } else if (arg === "-h" || arg === "--help") {
+      console.log(usage());
+      process.exit(0);
+    } else if (!arg.startsWith("-") && version === undefined) {
+      version = arg;
     } else {
-      options.version = arg;
+      throw new Error(`Unexpected argument: ${arg}\n${usage()}`);
     }
   }
-  options.root = path.resolve(options.root);
-  return options;
+  if (check === (version !== undefined)) {
+    throw new Error(usage());
+  }
+  if (version !== undefined && !SEMVER.test(version)) {
+    throw new Error(`Not a semantic version: ${version}`);
+  }
+  return { root, check, version };
 }
 
-function main() {
-  const options = parseArgs(process.argv.slice(2));
-  const packageVersion = readJson(options.root, "package.json").version;
-  const version = options.version ?? (options.check ? packageVersion : null);
-  if (!version || !VERSION_PATTERN.test(version)) {
-    throw new Error("Provide a semantic version such as 0.3.0.");
+function loadFiles(root) {
+  const files = new Map();
+  for (const { file } of FIELDS) {
+    if (!files.has(file)) {
+      files.set(file, JSON.parse(fs.readFileSync(path.join(root, file), "utf8")));
+    }
   }
+  return files;
+}
 
-  const mismatches = [];
-  const changed = [];
-  for (const [file, paths] of TARGETS) {
-    const json = readJson(options.root, file);
-    if (options.check) {
-      for (const keys of paths) {
-        const actual = getAtPath(json, keys);
-        if (actual !== version) {
-          mismatches.push(`${file} ${keys.join(".")}: expected ${version}, found ${actual ?? "<missing>"}`);
-        }
-      }
-      continue;
-    }
-    const before = JSON.stringify(json);
-    for (const keys of paths) {
-      setAtPath(json, keys, version);
-    }
-    if (JSON.stringify(json) !== before) {
-      fs.writeFileSync(path.join(options.root, file), `${JSON.stringify(json, null, 2)}\n`);
-      changed.push(file);
-    }
+function check(root) {
+  const files = loadFiles(root);
+  const found = FIELDS.map((field) => ({ ...field, value: field.get(files.get(field.file)) }));
+  const versions = new Set(found.map((field) => field.value));
+  if (versions.size === 1 && found[0].value !== undefined) {
+    console.log(`Version ${found[0].value} is consistent across ${found.length} fields.`);
+    return 0;
   }
-  if (mismatches.length) {
-    throw new Error(`Version metadata is out of sync:\n${mismatches.join("\n")}`);
+  console.error("Version fields disagree:");
+  for (const field of found) {
+    console.error(`  ${field.file} ${field.label}: ${field.value ?? "(missing)"}`);
   }
-  process.stdout.write(
-    options.check
-      ? `All version metadata matches ${version}.\n`
-      : `Set version metadata to ${version}: ${changed.join(", ") || "no files changed"}.\n`
-  );
+  console.error("Run: npm run bump-version -- <version>");
+  return 1;
+}
+
+function bump(root, version) {
+  const files = loadFiles(root);
+  for (const field of FIELDS) {
+    field.set(files.get(field.file), version);
+  }
+  for (const [file, json] of files) {
+    fs.writeFileSync(path.join(root, file), `${JSON.stringify(json, null, 2)}\n`);
+    console.log(`Updated ${file}`);
+  }
+  console.log(`Version set to ${version}.`);
+  return 0;
 }
 
 try {
-  main();
+  const options = parseArgs(process.argv.slice(2));
+  process.exitCode = options.check ? check(options.root) : bump(options.root, options.version);
 } catch (error) {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 2;
 }

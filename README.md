@@ -1,11 +1,13 @@
 # Antigravity `agy` plugin for Claude Code
 
-This plugin delegates tasks from Claude Code to the locally installed Antigravity CLI (`agy`). It follows the command/agent/companion pattern used by the OpenAI Codex Claude Code plugin, but uses `agy -p` as a plain subprocess because `agy` does not expose a JSON app-server protocol.
+This plugin lets Claude Code delegate work to the locally installed Antigravity CLI (`agy`, Gemini): independent investigations, codebase exploration, second opinions, and cross-model code reviews.
+
+It is a model-invocable **skill** plus one thin wrapper script. Claude decides on its own when to hand a task to agy, calls the wrapper through its Bash tool, runs long or parallel jobs with Bash `run_in_background` (Claude is notified when they finish), and cancels them with TaskStop. There are no job records, hooks, or forwarding subagents to manage.
 
 ## Requirements
 
 - Node.js 18.18 or newer
-- `agy` 1.1.12 or newer on `PATH`
+- `agy` 1.4.0 or newer on `PATH`
 - Antigravity authentication configured for the selected account or environment
 
 To authenticate, run `agy` in a terminal with an interactive TTY:
@@ -16,7 +18,7 @@ agy
 
 If Claude Code's `! agy` reports that `/dev/tty` is unavailable, run `agy` in a separate WSL, Windows Terminal, or other interactive terminal window.
 
-Antigravity also supports Gemini Enterprise sign-in, Workforce Identity Federation, and Application Default Credentials. Configure those through Antigravity or Google Cloud as appropriate; `/agy:setup` verifies backend access without starting an agent turn by querying the machine-readable model catalog first and the agent catalog after model readiness succeeds.
+Antigravity also supports Gemini Enterprise sign-in, Workforce Identity Federation, and Application Default Credentials. Configure those through Antigravity or Google Cloud as appropriate, then confirm with `/agy:setup`.
 
 ## Installation
 
@@ -58,166 +60,135 @@ Validate the marketplace/plugin bundle with:
 claude plugin validate . --strict
 ```
 
+## How Claude uses it
+
+The `antigravity` skill describes when delegation is worthwhile, so Claude can pick it up without being told. Typical triggers:
+
+- a self-contained investigation or codebase exploration that can run while Claude keeps working
+- a second opinion or a cross-model review of a change
+- several independent questions that can run in parallel
+- you asking for agy, Antigravity, or Gemini
+
+Claude is also told when not to delegate: trivial lookups it can do itself, and tasks that depend on this conversation's context that cannot be passed along (agy cannot see the conversation, so every prompt must be self-contained).
+
+Ask explicitly whenever you like:
+
+```text
+Ask agy to map how authentication flows through this repo and report the entry points.
+Have agy review my uncommitted changes while you keep working on the tests.
+Get a second opinion from Antigravity on this migration plan.
+```
+
+Claude then writes a standalone prompt, runs the wrapper (in the background for long jobs), checks the cited files and lines, and tells you which results came from Antigravity. If agy reports a conversation id, Claude can continue the same conversation for follow-ups.
+
+### Modes
+
+| Mode | Behavior | When Claude uses it |
+| --- | --- | --- |
+| `read` (default) | Requests read-only behavior: no edit mode, a read-only instruction added to the prompt, and the sandbox. Not enforced unless agy's permission setting is strict (see Permissions). | Always, unless you ask otherwise. |
+| `write` | accept-edits: agy may edit files automatically. | Only when you explicitly ask agy to make changes. |
+| `auto` | agy auto mode: autonomous, with a reviewer agent for sandbox escapes. Linux and macOS only. | Only when you explicitly ask for it. |
+
+The agy sandbox is on by default. `--no-sandbox` is used only when a task needs network access or installs and you are fine with that. If agy is blocked by permissions, the wrapper prints a `denied actions` line and Claude reports it instead of silently escalating the mode.
+
+### Permissions
+
+agy's own permission settings decide what it may do, not the wrapper's mode. If `toolPermission` in `~/.gemini/antigravity-cli/settings.json` is `always-proceed`, agy auto-approves everything, so a read-mode run can still edit files. Read mode is enforced only when `toolPermission` is `request-review` or `strict`. To make read mode strict, set `toolPermission` to `request-review` in agy's settings (see agy's `/permissions` or `/config`). The footer shows `permission=<value>` after each run and `/agy:setup` (`--check`) prints `toolPermission` and `agentMode`, so you can see what is in effect. Claude is told to check this and to report unexpected `git status` changes after a read-mode run.
+
 ## Commands
 
 ```text
 /agy:setup
-/agy:run [structured output options] [options] -- <task>
-/agy:rescue [options] -- <task>
-/agy:continue [--job <job-id>|--conversation <id>] [options] -- <follow-up>
-/agy:review [--base <ref>] [--scope auto|working-tree|branch] [--wait|--background]
-/agy:adversarial-review [review options] [focus text]
-/agy:status [job-id] [--wait] [--json]
-/agy:result [job-id]
-/agy:cancel [job-id]
+/agy:review [--base <ref>] [focus]
 ```
 
-## Reviews
+- `/agy:setup` runs `agy-task.mjs --check`: it verifies the executable, the minimum version (agy 1.4.0 or newer; older versions fail the check), backend readiness, and prints agy's `toolPermission` and `agentMode`.
+- `/agy:review` has Claude write the diff of your working tree (or of the branch against `--base <ref>`) to a file, have agy review it in read mode using the bundled JSON schema, then verify each finding before presenting it. Findings are never applied automatically.
 
-Run a read-only review of the working tree, or of the current branch when the working tree is clean:
+## Wrapper CLI reference
+
+The skill calls the wrapper below. You can also run it yourself.
 
 ```text
-/agy:review
-/agy:review --base origin/main --background
+node plugins/agy/scripts/agy-task.mjs [options] [--] <prompt...>
+node plugins/agy/scripts/agy-task.mjs [options] --prompt-file <path>      ("-" = stdin)
+node plugins/agy/scripts/agy-task.mjs --check
 ```
 
-Challenge the implementation approach and provide an optional focus:
+| Option | Description |
+| --- | --- |
+| `--mode read\|write\|auto` | Permission mode (default `read`). |
+| `--no-sandbox` | Disable the agy sandbox (on by default). |
+| `--conversation <id>` | Continue an earlier agy conversation. |
+| `--model <m>` | Model to use. |
+| `--effort low\|medium\|high\|xhigh\|max` | Reasoning effort (agy validates; availability depends on the model). |
+| `--agent <name>` | agy agent to use. |
+| `--add-dir <path>` | Extra directory agy may access (repeatable). Relative paths resolve against `--cwd` if given, else the current directory. |
+| `--json-schema <path-or-inline>` | Structured output; the schema root must be `type: object`. A relative file path resolves like `--add-dir`. |
+| `--timeout <duration>` | For example `10m`. Default is unlimited. |
+| `--cwd <dir>` | Working directory (resolved against the current directory). Recommend absolute paths everywhere. |
+| `--raw` | agy's JSON output verbatim. |
+| `--prompt-file <path>` | Read the prompt from a file (`-` for stdin); useful for long or quote-heavy prompts. A relative path resolves like `--add-dir`. |
+| `--check` | Verify agy is installed, recent enough, and ready. |
+| `-h`, `--help` | Show help. |
+
+Output is the response text (or pretty-printed JSON with `--json-schema`) followed by a footer:
 
 ```text
-/agy:adversarial-review --scope working-tree -- focus on rollback and stale-state behavior
+---
+[agy] status=<OK|PARTIAL|ERROR> conversation=<id> turns=<n> duration=<s>s mode=<read|write|auto> sandbox=<on|off> permission=<toolPermission|default|unknown>
+[agy] denied actions: ...                (if any)
+[agy] timed out: response is partial     (if the timeout was reached)
+[agy] error: <message> (status=..., retryable=...)   (on error)
+[agy] continue with: --conversation <id>
 ```
 
-Reviews always use plan+sandbox mode. They include staged, unstaged, and untracked changes, use the bundled JSON schema, and render stable findings with severity, file location, confidence, and recommendations. Branch refs are resolved to immutable commit object IDs before prompt construction. Review findings are never applied automatically.
+Prompts are passed to agy as a command-line argument: the wrapper rejects prompts over 100 KB (about 30 KB on Windows) and NUL bytes (exit 2). For large material, write it to a file and tell agy to read it (with `--add-dir` if it is outside the workspace).
 
-Every review records a repository fingerprint before launching and verifies it again after completion. If the worktree, index, untracked files, or HEAD changes while a foreground or background review is running, the result is rejected as stale and must be rerun.
+Cancelling the wrapper (for example with TaskStop) terminates agy's whole process tree.
 
-### Permission modes
+Exit codes:
 
-Safe mode is the default:
+| Code | Meaning |
+| --- | --- |
+| 0 | OK |
+| 4 | Partial output (only when `--timeout` was given and expired) |
+| 3 | agy runtime error (quota, model failure, any non-SUCCESS status such as cancelled, or `--json-schema` requested but no structured output returned) |
+| 2 | Usage error (wrapper, or passed through from agy) |
+| 1 | agy rejected its arguments |
+| 126 | agy could not be started (on Windows `.cmd`/`.bat` shims are unsupported; point `AGY_BIN` at `agy.exe`) |
+| 127 | agy not found |
+| 129/130/143 | Wrapper was stopped by a signal (for example TaskStop) |
 
-```text
-/agy:run -- inspect this repository and propose a migration plan
-```
+`--check` exits 0 when ready and 1 otherwise, including when agy is missing or older than 1.4.0.
 
-It maps to:
+## Migrating from 0.4
 
-```text
-agy --output-format json --mode plan --sandbox --disable-slash-commands -p "<prompt>"
-```
+0.5.0 replaces the human slash-command workflow with a skill that Claude invokes itself.
 
-Explicit write mode:
+| Removed | Replacement |
+| --- | --- |
+| `/agy:run`, `/agy:rescue` | Ask Claude to delegate to agy; it uses the `antigravity` skill. |
+| `--background`, background jobs, `/agy:status`, `/agy:result` | Claude runs the wrapper with Bash `run_in_background` and is notified on completion. |
+| `/agy:cancel` | TaskStop on the background Bash task. |
+| `/agy:continue`, `--job`, `--continue` | `--conversation <id>` (the id is printed in the output footer). |
+| `/agy:adversarial-review` | `/agy:review [--base <ref>] [focus]`, with the focus text steering the review. |
+| `--full-access` / `--dangerously-skip-permissions` | Removed. Use `--mode auto` or `--mode write`, or configure Antigravity permissions interactively. |
+| Stop-time review gate (`--enable-review-gate`) and the UserPromptSubmit/Stop hooks | Removed. Ask for a review with `/agy:review`. |
+| `agy-rescue` subagent, `agy-cli-runtime` skill | Replaced by the single `antigravity` skill. |
+| `--output-format`, `--print-timeout`, `--project`, `--new-project` | `--raw` for agy's JSON, `--timeout` (unlimited by default); projects are no longer managed. |
 
-```text
-/agy:run --write -- implement the approved migration
-```
+Job records under `$CLAUDE_PLUGIN_DATA/state` are no longer written or read.
 
-It maps to:
+## Limitations
 
-```text
-agy --output-format json --mode accept-edits --sandbox --disable-slash-commands -p "<prompt>"
-```
-
-Confirmed full access:
-
-```text
-/agy:run --full-access -- perform the explicitly authorized system-level task
-```
-
-Claude Code asks for confirmation before the runtime can pass:
-
-```text
-agy --output-format json --mode accept-edits --dangerously-skip-permissions --disable-slash-commands -p "<prompt>"
-```
-
-Full access is never inferred, is unavailable through `/agy:rescue`, and cannot run in the background in V1.
-
-## Runtime options
-
-The task runtime accepts:
-
-- `--background`
-- `--write` or `--full-access`
-- `--output-format text|json|stream-json`
-- `--json-schema <inline-schema-or-path>`
-- `--model <model>`
-- `--agent <agent>`
-- `--effort low|medium|high`
-- `--print-timeout <duration>`
-- repeatable `--add-dir <path>`
-- `--project <id>` or `--new-project`
-- `--continue` or `--conversation <id>`
-- `--cwd <path>` for the companion working directory
-
-Use `--` before task text that begins with a dash.
-
-## Structured output
-
-The companion requests `json` output by default, disables Antigravity slash-command expansion so leading `/` task text remains literal, stores its metadata, and returns only the response text to preserve the normal Claude Code experience. Passing an explicit format returns the raw CLI output:
-
-```text
-/agy:run --output-format json -- inspect this repository
-/agy:run --output-format stream-json -- inspect this repository
-```
-
-`stream-json` is validated and forwarded incrementally as typed NDJSON `init` and `step_update` events. The terminal `result` is held until the agy process exits, ensuring consumers receive exactly one final success or failure result. Each emitted event is appended directly to the private job output file, and the complete stream remains available through `/agy:result`.
-
-Explicit `json` and `stream-json` modes keep stdout machine-readable even when the task fails or is cancelled. Plugin and Antigravity diagnostics are written to stderr, including warnings from successful runs; malformed or incomplete structured output is replaced or completed with a valid `FAILED` result.
-
-Use a JSON schema inline or, preferably, from a file:
-
-```text
-/agy:run --json-schema ./schemas/review.json -- review this repository
-```
-
-When a schema is supplied without an explicit output format, the command returns `structured_output`. Job records retain the conversation ID, terminal status, duration, turn count, token usage including cache reads, recent step summaries, canonical tool names, and child conversation/log references. Tool parameters and output remain only in the private raw output file rather than job metadata.
-
-Continue the latest recorded non-gate conversation, or a specific recorded job, without copying its Antigravity conversation ID:
-
-```text
-/agy:continue -- investigate the latest user task
-/agy:continue --job <job-id> -- investigate the first finding
-```
-
-The companion does not use agy's global `-c` latest pointer because internal reviews or unrelated terminal sessions could otherwise change its meaning. A recorded job must finish before it can be selected with `--job`, and a deadline-backed claim prevents two local plugin jobs from continuing the same Antigravity conversation concurrently, including from different workspaces. Pass `--conversation <id>` when continuing a conversation that was not recorded by this plugin.
-
-Request machine-readable job metadata:
-
-```text
-/agy:status <job-id> --json
-```
-
-## Setup and experimental review gate
-
-`/agy:setup` verifies the installed executable, the minimum agy 1.1.12 version, json and stream-json formats, JSON schema validation, slash-command disabling, backend readiness through the model catalog followed by the agent catalog, and the local state directory. Task execution also enforces the minimum version before launching an agent turn. Builds without the required features are rejected instead of using a compatibility path; readiness failures are reported separately from CLI incompatibility, with the underlying authentication, authorization, network, or malformed-output diagnostic preserved when available.
-
-An optional stop-time review gate can challenge the previous Claude turn before the session stops:
-
-```text
-/agy:setup --enable-review-gate
-/agy:setup --disable-review-gate
-```
-
-The gate is disabled by default and fails open when agy is unavailable or the review cannot run. After it is enabled, the next `UserPromptSubmit` hook records a private git baseline for that Claude turn. The Stop hook compares HEAD, index, working tree, and untracked files against that baseline, so committed changes are included. It generates a private baseline-to-current patch and uses that patch as the exclusive hunk evidence, preventing unchanged pre-existing dirty hunks from being attributed to the current turn. Oversized or unsupported paths that cannot be isolated safely are excluded rather than risking a false block.
-
-Only high-confidence `high` or `critical` findings block stopping. The block message contains a trusted job ID rather than model-generated finding text; inspect details explicitly with `/agy:result <job-id>`. Internal gate jobs are hidden from default status/result selection but are visible with `/agy:status --all`. The gate can add latency and token usage and should be enabled intentionally.
-
-## Important limitations
-
-- Status and cancellation are local plugin process records, not Antigravity server APIs.
-- If a local continuation worker exits unexpectedly, its conversation remains claimed until the original print timeout plus a one-minute safety window, preventing overlap with a potentially orphaned CLI process.
-- A review result is intentionally discarded if the repository fingerprint changes before it finishes.
-- Headless permission prompts may be soft-denied. Configure required Antigravity permissions interactively rather than using full access by default.
-- The runtime uses an argv array with `shell: false`, so prompt metacharacters are not evaluated by a shell, but the `-p` prompt may be visible to local process-inspection tools while `agy` is running.
-- A completed prompt is not retained in job metadata. Background prompts exist briefly in a mode-`0600` request file until the worker starts.
-- A single JSON document or NDJSON event is limited to 32 MiB. `stream-json` does not retain the complete stream in memory.
-
-## State
-
-Per-workspace job records and per-session turn baselines are stored below `$CLAUDE_PLUGIN_DATA/state` when Claude Code provides it. Otherwise the runtime uses an OS temporary directory. Job metadata, structured stdout, stderr, and lifecycle logs are private files; the most recent 50 user jobs and 20 internal gate jobs are retained. Turn baselines and synthetic evidence are deleted after Stop processing. Artifacts left by an interrupted session are deleted after 24 hours on the next plugin state access; fresh sessions are not pruned by count.
+- agy runs headlessly: permission prompts cannot be answered. What is denied depends on agy's permission setting; read mode is not enforced under `always-proceed` (see Permissions).
+- The wrapper starts `agy` with an argv array and `shell: false`, so prompt metacharacters are not evaluated by a shell, but the prompt is passed to agy as a command-line argument and may be visible to local process-inspection tools while `agy` runs, including when read via `--prompt-file`. Do not put secrets in prompts.
+- agy output is model output: Claude is instructed to verify it before presenting it, but you should review anything consequential yourself.
 
 ## Acknowledgements
 
-This plugin's command, thin-agent, companion-runtime, and local job-tracking architecture is adapted in part from the [OpenAI Codex Plugin for Claude Code](https://github.com/openai/codex-plugin-cc), licensed under the Apache License 2.0. See [NOTICE](NOTICE) for attribution details.
+This project began as an adaptation of the [OpenAI Codex Plugin for Claude Code](https://github.com/openai/codex-plugin-cc). Since 0.5.0 it contains no code or files from that project.
 
 This is an independent community project. It is not affiliated with or endorsed by OpenAI, Google, or the Antigravity project.
 

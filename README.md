@@ -188,7 +188,7 @@ Job records under `$CLAUDE_PLUGIN_DATA/state` are no longer written or read.
 
 ## Acknowledgements
 
-This plugin started from the command, thin-agent, and companion-runtime architecture of the [OpenAI Codex Plugin for Claude Code](https://github.com/openai/codex-plugin-cc), licensed under the Apache License 2.0. The 0.5.0 restructure replaced that architecture with a skill and a single wrapper script, but portions of the repository tooling (for example `scripts/bump-version.mjs`) remain adapted from that project. See [NOTICE](NOTICE) for attribution details.
+This plugin started from the command, thin-agent, and companion-runtime architecture of the [OpenAI Codex Plugin for Claude Code](https://github.com/openai/codex-plugin-cc), licensed under the Apache License 2.0. The 0.5.0 restructure replaced that architecture with a skill and a single wrapper script, but some files remain adapted from that project: the review output schema (`plugins/agy/schemas/review-output.schema.json`) and repository tooling such as `scripts/bump-version.mjs`. See [NOTICE](NOTICE) for attribution details.
 
 This is an independent community project. It is not affiliated with or endorsed by OpenAI, Google, or the Antigravity project.
 

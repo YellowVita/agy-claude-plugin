@@ -180,10 +180,15 @@ function readSettings() {
   }
 }
 
+// agy drops settings that equal its defaults from settings.json, so an unset
+// toolPermission means agy's default, request-review.
+const SETTING_DEFAULTS = { toolPermission: "request-review" };
+
 function settingValue(result, key) {
   if (result.error) return "unknown";
   const value = result.settings[key];
-  return typeof value === "string" && value ? value : "default";
+  if (typeof value === "string" && value) return value;
+  return SETTING_DEFAULTS[key] ?? "default";
 }
 
 // Strip ANSI sequences and spinner frames so only meaningful stderr lines remain.
@@ -235,6 +240,10 @@ function parseAgyError(stderrLines) {
 
 function describeAction(action) {
   if (typeof action === "string") return action;
+  // agy 1.4 reports e.g. {"action":"command","display_name":"RunCommand"}.
+  if (action && typeof action === "object" && action.action && action.display_name) {
+    return `${action.action} (${action.display_name})`;
+  }
   if (action && typeof action === "object") {
     const name = action.name ?? action.tool ?? action.tool_name ?? action.action ?? action.type;
     const detail = action.command ?? action.path ?? action.file ?? action.target ?? action.description;

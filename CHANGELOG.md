@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.1
+
+Verified against real agy 1.4.2 runs (success, follow-up, timeout, denied actions, schema review).
+
+- Show agy 1.4's `denied_actions` entries as `command (RunCommand)` instead of just `command`.
+- Show an unset `toolPermission` as `request-review`, agy's default, instead of `default`. agy removes default values from `settings.json`.
+- Use agy's real timeout wording in the tests. On `--print-timeout` expiry agy exits 0 with status `SUCCESS` and prints `[agy] print timeout after …; returning partial output` to stderr, which the wrapper reports as PARTIAL.
+- Tell Claude that a run stopped by a denied permission can return an empty response.
+
 ## 0.5.0
 
 Breaking restructure: the plugin is now a model-invocable skill plus one thin wrapper script instead of human slash commands, a forwarding subagent, and hooks.

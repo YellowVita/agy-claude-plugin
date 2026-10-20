@@ -93,7 +93,7 @@ The agy sandbox is on by default. `--no-sandbox` is used only when a task needs 
 
 ### Permissions
 
-agy's own permission settings decide what it may do, not the wrapper's mode. If `toolPermission` in `~/.gemini/antigravity-cli/settings.json` is `always-proceed`, agy auto-approves everything, so a read-mode run can still edit files. Read mode is enforced only when `toolPermission` is `request-review` or `strict`. To make read mode strict, set `toolPermission` to `request-review` in agy's settings (see agy's `/permissions` or `/config`). The footer shows `permission=<value>` after each run and `/agy:setup` (`--check`) prints `toolPermission` and `agentMode`, so you can see what is in effect. Claude is told to check this and to report unexpected `git status` changes after a read-mode run.
+agy's own permission settings decide what it may do, not the wrapper's mode. If `toolPermission` in `~/.gemini/antigravity-cli/settings.json` is `always-proceed`, agy auto-approves everything, so a read-mode run can still edit files. Read mode is enforced only when `toolPermission` is `request-review` or `strict`. To make read mode strict, set `toolPermission` to `request-review` in agy's settings (see agy's `/permissions` or `/config`). If `toolPermission` is not set, agy uses `request-review`, and the footer shows that. The footer shows `permission=<value>` after each run and `/agy:setup` (`--check`) prints `toolPermission` and `agentMode`, so you can see what is in effect. Claude is told to check this and to report unexpected `git status` changes after a read-mode run.
 
 ## Commands
 
@@ -136,7 +136,7 @@ Output is the response text (or pretty-printed JSON with `--json-schema`) follow
 
 ```text
 ---
-[agy] status=<OK|PARTIAL|ERROR> conversation=<id> turns=<n> duration=<s>s mode=<read|write|auto> sandbox=<on|off> permission=<toolPermission|default|unknown>
+[agy] status=<OK|PARTIAL|ERROR> conversation=<id> turns=<n> duration=<s>s mode=<read|write|auto> sandbox=<on|off> permission=<toolPermission|unknown>
 [agy] denied actions: ...                (if any)
 [agy] timed out: response is partial     (if the timeout was reached)
 [agy] error: <message> (status=..., retryable=...)   (on error)

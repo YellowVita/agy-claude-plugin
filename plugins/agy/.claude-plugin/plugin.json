@@ -1,6 +1,6 @@
 {
   "name": "agy",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Delegate investigations, reviews, and explicitly requested edits to the Antigravity agy CLI from Claude Code.",
   "author": {
     "name": "Antigravity Plugin Contributors"

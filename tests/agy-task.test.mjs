@@ -108,7 +108,7 @@ const READ_GUARD =
   "(installs, git commit/checkout/reset, writes to network services). Only read and analyze, then answer.\n\n";
 
 const SUCCESS_FOOTER =
-  "---\n[agy] status=OK conversation=conv-123 turns=2 duration=1.3s mode=read sandbox=on permission=default\n" +
+  "---\n[agy] status=OK conversation=conv-123 turns=2 duration=1.3s mode=read sandbox=on permission=request-review\n" +
   "[agy] continue with: --conversation conv-123\n";
 
 function isAlive(pid) {
@@ -160,7 +160,7 @@ describe("agy-task", { skip: process.platform === "win32" && "fake agy uses a PO
       "--add-dir", path.join(dir, "a"), "--add-dir", path.join(dir, "b"),
       "--json-schema", schema, "--print-timeout", "5m", "-p", "--fix it"
     ]);
-    assert.match(result.stdout, /mode=write sandbox=off permission=default/);
+    assert.match(result.stdout, /mode=write sandbox=off permission=request-review/);
   });
 
   test("auto mode; relative paths resolve against --cwd", () => {
@@ -242,10 +242,20 @@ describe("agy-task", { skip: process.platform === "win32" && "fake agy uses a PO
     assert.match(result.stdout, /^\[agy\] denied actions: write_file src\/a\.js, run_command npm test$/m);
   });
 
+  test("renders agy 1.4 denied_actions entries", () => {
+    const { run } = setup();
+    // Shape observed from agy 1.4.2 when headless mode auto-denies a command.
+    const denied = JSON.stringify([{ action: "command", display_name: "RunCommand" }]);
+    const result = run(["hi"], { env: { FAKE_AGY_DENIED: denied } });
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /^\[agy\] denied actions: command \(RunCommand\)$/m);
+  });
+
   test("--timeout expiry is reported as PARTIAL with exit 4", () => {
     const { run } = setup();
     const result = run(["--timeout", "1s", "hi"], {
-      env: { FAKE_AGY_STDERR: "Warning: print timeout of 1s reached; returning partial output\n" }
+      // Wording observed from agy 1.4.2; it still exits 0 with status SUCCESS.
+      env: { FAKE_AGY_STDERR: "[agy] print timeout after 1s with turn in progress; returning partial output\n" }
     });
     assert.equal(result.status, 4);
     assert.match(result.stdout, /status=PARTIAL/);
@@ -416,7 +426,7 @@ describe("agy-task", { skip: process.platform === "win32" && "fake agy uses a PO
 
   test("--check tolerates missing or invalid settings", () => {
     const { run, writeSettings } = setup();
-    assert.match(run(["--check"]).stdout, /toolPermission: default\nagentMode: default/);
+    assert.match(run(["--check"]).stdout, /toolPermission: request-review\nagentMode: default/);
     writeSettings("[1, 2");
     const result = run(["--check"]);
     assert.equal(result.status, 0);

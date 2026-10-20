@@ -58,6 +58,7 @@ Relative `--add-dir`, `--json-schema`, and `--prompt-file` paths resolve against
 agy's own permission setting (`toolPermission` in `~/.gemini/antigravity-cli/settings.json`, plus any persisted agent mode) decides what is actually allowed. Read mode only avoids edit mode, prepends a "do not create, modify, or delete files" instruction, and keeps the sandbox on. It is enforced only when agy's permission is `request-review` or `strict`; with `always-proceed`, agy can still edit files.
 
 - Check the footer's `permission=` value (`--check` also prints `toolPermission` and `agentMode`).
+- If agy needed a permission headless mode cannot grant (for example running a command under `request-review`), it stops: the response may be empty and the footer lists `denied actions`. Report that instead of treating the run as an answer.
 - Before a read task on a repo with uncommitted work, be aware of this; if `permission=always-proceed`, consider telling the user first.
 - After a read-mode run, check `git status`. If there are unexpected changes, tell the user and do not revert them yourself.
 

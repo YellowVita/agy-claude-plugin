@@ -21,7 +21,8 @@ Runs one headless agy turn (agy --output-format json --disable-slash-commands -p
 Options end at the first prompt word or at "--".
 
 Options:
-  --mode read|write|auto  read (default): agy default mode plus a read-only instruction in the prompt;
+  --mode read|write|auto  read (default): agy's default Agent Mode (Auto on agy 1.5.7+) plus a
+                          read-only instruction in the prompt;
                           requested, not enforced: agy's own permission settings decide
                           write: --mode accept-edits; auto: --mode auto
   --no-sandbox            do not pass --sandbox (sandbox is on by default)
@@ -191,6 +192,19 @@ function settingValue(result, key) {
   return SETTING_DEFAULTS[key] ?? "default";
 }
 
+// agy 1.5.7 made Auto the default Agent Mode (headless -p runs included) where Auto is
+// available; choosing Default in /config saves "agentMode": "".
+const AUTO_DEFAULT_VERSION = [1, 5, 7];
+
+function agentModeValue(result, version) {
+  if (result.error) return "unknown";
+  const value = result.settings.agentMode;
+  if (typeof value === "string" && value) return value;
+  if (value === "") return "default";
+  if (value !== undefined) return "unknown";
+  return compareVersions(version, AUTO_DEFAULT_VERSION) >= 0 ? "auto (agy default; default where Auto is unavailable)" : "default";
+}
+
 // Strip ANSI sequences and spinner frames so only meaningful stderr lines remain.
 function cleanLines(text) {
   return String(text ?? "")
@@ -259,22 +273,29 @@ function formatDuration(value) {
 function renderResult({ opts, payload, code, signal, stderrLines }) {
   const status = typeof payload.status === "string" ? payload.status : "";
   const agyError = parseAgyError(stderrLines);
-  // A --print-timeout expiry exits 0 with a stderr warning; it must never mask a reported error.
-  const timedOut = Boolean(opts.timeout) && code === 0 && !ERROR_STATUS_PATTERN.test(status) &&
-    stderrLines.some((line) => TIMEOUT_PATTERN.test(line));
+  const finishedReason = typeof payload.finished_reason === "string" ? payload.finished_reason : "";
+  // agy 1.4.11+ reports finished_reason "print_timeout" (and since 1.5.0 exits 3 with status ERROR).
+  // agy 1.4.0-1.4.10 exit 0 with a stderr warning; that fallback must never mask a reported error.
+  const timedOut = Boolean(opts.timeout) && (finishedReason === "print_timeout" ||
+    (!finishedReason && code === 0 && !ERROR_STATUS_PATTERN.test(status) &&
+      stderrLines.some((line) => TIMEOUT_PATTERN.test(line))));
   let errorMessage = null;
-  if (code !== 0 || (status.toUpperCase() !== "SUCCESS" && !timedOut)) {
+  // Any other finished_reason (interrupted, error, ...) means the turn ended early, whatever the exit code.
+  if (!timedOut && (code !== 0 || status.toUpperCase() !== "SUCCESS" || finishedReason)) {
     const jsonError = typeof payload.error === "string" ? payload.error : payload.error?.message;
     const stderrError = stderrLines.find((line) => /^error:/i.test(line))?.replace(/^error:\s*/i, "");
     const fallback = signal ? `agy was killed by ${signal}` :
-      code !== 0 ? `agy exited with code ${code}` : `agy reported status ${status || "(missing)"}`;
+      code !== 0 ? `agy exited with code ${code}` :
+      finishedReason && status.toUpperCase() === "SUCCESS" ? `agy turn ended early: finished_reason=${finishedReason}` :
+      `agy reported status ${status || "(missing)"}`;
     const details = [`status=${agyError?.status ?? (status || "missing")}`];
     if (typeof agyError?.retryable === "boolean") details.push(`retryable=${agyError.retryable}`);
     errorMessage = `${jsonError || agyError?.short_error || stderrError || fallback} (${details.join(", ")})`;
   }
   const structured = payload.structured_output;
   const hasStructured = structured !== undefined && structured !== null;
-  if (!errorMessage && opts.jsonSchema && !hasStructured) {
+  // A timed-out turn has no structured output; report it as PARTIAL, not as a missing result.
+  if (!errorMessage && !timedOut && opts.jsonSchema && !hasStructured) {
     errorMessage = "structured output missing: --json-schema was requested but agy returned no structured_output";
   }
   const label = errorMessage ? "ERROR" : timedOut ? "PARTIAL" : "OK";
@@ -325,7 +346,8 @@ function runCheck() {
   const settings = readSettings();
   process.stdout.write(
     `settings: ${settings.file}${settings.error ? ` (unreadable: ${settings.error})` : ""}\n` +
-      `toolPermission: ${settingValue(settings, "toolPermission")}\nagentMode: ${settingValue(settings, "agentMode")}\n`
+      `toolPermission: ${settingValue(settings, "toolPermission")}\n` +
+      `agentMode: ${agentModeValue(settings, match.slice(1, 4).map(Number))}\n`
   );
   // agy 1.4.2 only accepts global flags before the subcommand.
   const models = spawnSync(bin, ["--output-format", "json", "models"], spawnOpts);

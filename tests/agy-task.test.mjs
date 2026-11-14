@@ -263,6 +263,61 @@ describe("agy-task", { skip: process.platform === "win32" && "fake agy uses a PO
     assert.match(result.stderr, /print timeout/);
   });
 
+  test("agy 1.5 --timeout expiry (exit 3, finished_reason print_timeout) is PARTIAL with exit 4", () => {
+    const { run } = setup();
+    // Output observed from agy 1.5.8.
+    const error = "print timeout after 2s with the turn still in progress; the response is partial";
+    const stdout = JSON.stringify({
+      conversation_id: "conv-t", status: "ERROR", response: "", error, duration_seconds: 0, num_turns: 1,
+      usage: {}, finished_reason: "print_timeout"
+    });
+    const agyError = JSON.stringify({ short_error: error, status: "DEADLINE_EXCEEDED", retryable: false, reason: "print_timeout" });
+    const result = run(["--timeout", "2s", "hi"], {
+      env: {
+        FAKE_AGY_STDOUT: stdout, FAKE_AGY_EXIT: "3",
+        FAKE_AGY_STDERR: `[agy] print timeout after 2s with turn in progress; returning partial output\nerror: ${error}\nAGY_ERROR: ${agyError}\n`
+      }
+    });
+    assert.equal(result.status, 4);
+    assert.match(result.stdout, /status=PARTIAL conversation=conv-t/);
+    assert.match(result.stdout, /^\[agy\] timed out: response is partial$/m);
+    assert.doesNotMatch(result.stdout, /\[agy\] error:/);
+    assert.match(result.stdout, /continue with: --conversation conv-t/);
+  });
+
+  test("other finished_reason values are errors even with exit 0 and SUCCESS", () => {
+    const { run } = setup();
+    for (const reason of ["error", "interrupted"]) {
+      const stdout = JSON.stringify({ conversation_id: "c", status: "SUCCESS", response: "half", finished_reason: reason });
+      const result = run(["--timeout", "1s", "hi"], {
+        env: { FAKE_AGY_STDOUT: stdout, FAKE_AGY_STDERR: "[agy] print timeout after 1s\n" }
+      });
+      assert.equal(result.status, 3, reason);
+      assert.match(result.stdout, /status=ERROR/);
+      assert.match(result.stdout, new RegExp(`error: agy turn ended early: finished_reason=${reason}`));
+      assert.doesNotMatch(result.stdout, /timed out: response is partial/);
+    }
+  });
+
+  test("a --json-schema run that times out is PARTIAL, not missing structured output", () => {
+    const { run } = setup();
+    const stdout = JSON.stringify({ conversation_id: "c", status: "ERROR", response: "", error: "print timeout", finished_reason: "print_timeout" });
+    const result = run(["--timeout", "2s", "--json-schema", '{"type":"object"}', "hi"], {
+      env: { FAKE_AGY_STDOUT: stdout, FAKE_AGY_EXIT: "3" }
+    });
+    assert.equal(result.status, 4);
+    assert.match(result.stdout, /status=PARTIAL/);
+    assert.doesNotMatch(result.stdout, /structured output missing/);
+  });
+
+  test("print_timeout without --timeout is an error", () => {
+    const { run } = setup();
+    const stdout = JSON.stringify({ conversation_id: "c", status: "ERROR", response: "", error: "print timeout", finished_reason: "print_timeout" });
+    const result = run(["hi"], { env: { FAKE_AGY_STDOUT: stdout, FAKE_AGY_EXIT: "3" } });
+    assert.equal(result.status, 3);
+    assert.match(result.stdout, /status=ERROR/);
+  });
+
   test("timeout-like stderr without --timeout is not PARTIAL", () => {
     const { run } = setup();
     const result = run(["hi"], { env: { FAKE_AGY_STDERR: "warning: context deadline exceeded while syncing\n" } });
@@ -426,7 +481,13 @@ describe("agy-task", { skip: process.platform === "win32" && "fake agy uses a PO
 
   test("--check tolerates missing or invalid settings", () => {
     const { run, writeSettings } = setup();
-    assert.match(run(["--check"]).stdout, /toolPermission: request-review\nagentMode: default/);
+    assert.match(run(["--check"]).stdout, /toolPermission: request-review\nagentMode: default\n/);
+    const auto = run(["--check"], { env: { FAKE_AGY_VERSION: "1.5.7" } }).stdout;
+    assert.match(auto, /agentMode: auto \(agy default/);
+    writeSettings(JSON.stringify({ agentMode: "" }));
+    assert.match(run(["--check"], { env: { FAKE_AGY_VERSION: "1.5.8" } }).stdout, /agentMode: default\n/);
+    writeSettings(JSON.stringify({ agentMode: null }));
+    assert.match(run(["--check"], { env: { FAKE_AGY_VERSION: "1.5.8" } }).stdout, /agentMode: unknown\n/);
     writeSettings("[1, 2");
     const result = run(["--check"]);
     assert.equal(result.status, 0);

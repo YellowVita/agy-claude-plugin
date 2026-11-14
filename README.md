@@ -85,7 +85,7 @@ Claude then writes a standalone prompt, runs the wrapper (in the background for 
 
 | Mode | Behavior | When Claude uses it |
 | --- | --- | --- |
-| `read` (default) | Requests read-only behavior: agy's default Agent Mode (Auto on agy 1.5.7+), a read-only instruction added to the prompt, and the sandbox. Not enforced unless agy's permission setting is `strict` (see Permissions). | Always, unless you ask otherwise. |
+| `read` (default) | Requests read-only behavior: agy's default Agent Mode (Auto on agy 1.5.7+), a read-only instruction added to the prompt, and the sandbox. Not enforced unless agy's `toolPermission` is `strict`, or `request-review` under Default mode (agy before 1.5.7, or Agent Mode set to Default); see Permissions. | Always, unless you ask otherwise. |
 | `write` | accept-edits: agy may edit files automatically. | Only when you explicitly ask agy to make changes. |
 | `auto` | agy auto mode: autonomous, with a reviewer agent for sandbox escapes. Linux, macOS, and Windows 11 24H2+. | Only when you explicitly ask for it. |
 
@@ -182,7 +182,7 @@ Job records under `$CLAUDE_PLUGIN_DATA/state` are no longer written or read.
 
 ## Limitations
 
-- agy runs headlessly: permission prompts cannot be answered. What is denied depends on agy's permission setting; read mode is not enforced unless `toolPermission` is `strict` (see Permissions).
+- agy runs headlessly: permission prompts cannot be answered. What is denied depends on agy's permission setting; read mode is not enforced unless `toolPermission` is `strict`, or `request-review` under Default mode (see Permissions).
 - The wrapper starts `agy` with an argv array and `shell: false`, so prompt metacharacters are not evaluated by a shell, but the prompt is passed to agy as a command-line argument and may be visible to local process-inspection tools while `agy` runs, including when read via `--prompt-file`. Do not put secrets in prompts.
 - agy output is model output: Claude is instructed to verify it before presenting it, but you should review anything consequential yourself.
 

@@ -35,7 +35,7 @@ For anything longer than a few lines, write the prompt to a file in the scratchp
 | --- | --- |
 | `--mode read` (default) | Asks for read-only behaviour: agy's default Agent Mode (Auto on agy 1.5.7+), a read-only guard added to your prompt, and the sandbox. Use for investigation, review, and second opinions. NOT guaranteed, see "Read mode is a request" below. |
 | `--mode write` | agy may edit files (accept-edits). |
-| `--mode auto` | agy works autonomously with a reviewer agent for sandbox escapes. Linux, macOS, and Windows 11 24H2+; agy falls back to Default where Auto is unavailable. |
+| `--mode auto` | agy works autonomously with a reviewer agent for sandbox escapes. Linux, macOS, and Windows 11 24H2+. |
 | `--no-sandbox` | Disable agy's sandbox. The sandbox is on by default. |
 | `--conversation <id>` | Continue an earlier agy conversation. |
 | `--model <m>`, `--effort low\|medium\|high\|xhigh\|max`, `--agent <name>` | Pick model, reasoning effort (agy validates; availability depends on the model), or agent. Omit unless the user asked. |
@@ -61,7 +61,7 @@ agy's own settings (`toolPermission` and `agentMode` in `~/.gemini/antigravity-c
 - Only `toolPermission: strict` makes agy ask before every edit, even under Auto; headless runs then deny edits, and most commands, as `denied actions`. With the user's `agentMode` set to Default (`""`), `request-review` also blocks edits. With `always-proceed`, nothing does.
 - Check the footer's `permission=` value; `--check` prints `toolPermission` and the effective `agentMode`.
 - If agy needed a permission headless mode cannot grant, it stops: the response may be empty and the footer lists `denied actions`. Report that instead of treating the run as an answer.
-- Before a read task on a repo with uncommitted work, keep this in mind; unless `permission=strict`, consider telling the user first.
+- Before a read task on a repo with uncommitted work, keep this in mind; unless edits are blocked (`permission=strict`, or `request-review` with `--check` showing `agentMode: default`), consider telling the user first.
 - **After every read-mode run, check `git status`.** If there are unexpected changes, tell the user and do not revert them yourself.
 
 ## Foreground vs background

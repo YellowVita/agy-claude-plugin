@@ -201,6 +201,7 @@ function agentModeValue(result, version) {
   const value = result.settings.agentMode;
   if (typeof value === "string" && value) return value;
   if (value === "") return "default";
+  if (value !== undefined) return "unknown";
   return compareVersions(version, AUTO_DEFAULT_VERSION) >= 0 ? "auto (agy default; default where Auto is unavailable)" : "default";
 }
 
@@ -275,22 +276,26 @@ function renderResult({ opts, payload, code, signal, stderrLines }) {
   const finishedReason = typeof payload.finished_reason === "string" ? payload.finished_reason : "";
   // agy 1.4.11+ reports finished_reason "print_timeout" (and since 1.5.0 exits 3 with status ERROR).
   // agy 1.4.0-1.4.10 exit 0 with a stderr warning; that fallback must never mask a reported error.
-  const timedOut = finishedReason === "print_timeout" ||
-    (!finishedReason && Boolean(opts.timeout) && code === 0 && !ERROR_STATUS_PATTERN.test(status) &&
-      stderrLines.some((line) => TIMEOUT_PATTERN.test(line)));
+  const timedOut = Boolean(opts.timeout) && (finishedReason === "print_timeout" ||
+    (!finishedReason && code === 0 && !ERROR_STATUS_PATTERN.test(status) &&
+      stderrLines.some((line) => TIMEOUT_PATTERN.test(line))));
   let errorMessage = null;
-  if (!timedOut && (code !== 0 || status.toUpperCase() !== "SUCCESS")) {
+  // Any other finished_reason (interrupted, error, ...) means the turn ended early, whatever the exit code.
+  if (!timedOut && (code !== 0 || status.toUpperCase() !== "SUCCESS" || finishedReason)) {
     const jsonError = typeof payload.error === "string" ? payload.error : payload.error?.message;
     const stderrError = stderrLines.find((line) => /^error:/i.test(line))?.replace(/^error:\s*/i, "");
     const fallback = signal ? `agy was killed by ${signal}` :
-      code !== 0 ? `agy exited with code ${code}` : `agy reported status ${status || "(missing)"}`;
+      code !== 0 ? `agy exited with code ${code}` :
+      finishedReason && status.toUpperCase() === "SUCCESS" ? `agy turn ended early: finished_reason=${finishedReason}` :
+      `agy reported status ${status || "(missing)"}`;
     const details = [`status=${agyError?.status ?? (status || "missing")}`];
     if (typeof agyError?.retryable === "boolean") details.push(`retryable=${agyError.retryable}`);
     errorMessage = `${jsonError || agyError?.short_error || stderrError || fallback} (${details.join(", ")})`;
   }
   const structured = payload.structured_output;
   const hasStructured = structured !== undefined && structured !== null;
-  if (!errorMessage && opts.jsonSchema && !hasStructured) {
+  // A timed-out turn has no structured output; report it as PARTIAL, not as a missing result.
+  if (!errorMessage && !timedOut && opts.jsonSchema && !hasStructured) {
     errorMessage = "structured output missing: --json-schema was requested but agy returned no structured_output";
   }
   const label = errorMessage ? "ERROR" : timedOut ? "PARTIAL" : "OK";

@@ -33,9 +33,9 @@ For anything longer than a few lines, write the prompt to a file in the scratchp
 
 | Option | Use |
 | --- | --- |
-| `--mode read` (default) | Asks for read-only behaviour: no edit mode, a read-only guard added to your prompt, and the sandbox. Use for investigation, review, and second opinions. NOT guaranteed, see "Read mode is a request" below. |
+| `--mode read` (default) | Asks for read-only behaviour: agy's default Agent Mode (Auto on agy 1.5.7+), a read-only guard added to your prompt, and the sandbox. Use for investigation, review, and second opinions. NOT guaranteed, see "Read mode is a request" below. |
 | `--mode write` | agy may edit files (accept-edits). |
-| `--mode auto` | agy works autonomously with a reviewer agent for sandbox escapes. Linux/macOS only. |
+| `--mode auto` | agy works autonomously with a reviewer agent for sandbox escapes. Linux, macOS, and Windows 11 24H2+; agy falls back to Default where Auto is unavailable. |
 | `--no-sandbox` | Disable agy's sandbox. The sandbox is on by default. |
 | `--conversation <id>` | Continue an earlier agy conversation. |
 | `--model <m>`, `--effort low\|medium\|high\|xhigh\|max`, `--agent <name>` | Pick model, reasoning effort (agy validates; availability depends on the model), or agent. Omit unless the user asked. |
@@ -55,12 +55,14 @@ Relative `--add-dir`, `--json-schema`, and `--prompt-file` paths resolve against
 
 ### Read mode is a request, not a guarantee
 
-agy's own permission setting (`toolPermission` in `~/.gemini/antigravity-cli/settings.json`, plus any persisted agent mode) decides what is actually allowed. Read mode only avoids edit mode, prepends a "do not create, modify, or delete files" instruction, and keeps the sandbox on. It is enforced only when agy's permission is `request-review` or `strict`; with `always-proceed`, agy can still edit files.
+agy's own settings (`toolPermission` and `agentMode` in `~/.gemini/antigravity-cli/settings.json`) decide what is actually allowed. Read mode does not pick an Agent Mode: it uses agy's default, prepends a "do not create, modify, or delete files" instruction, and keeps the sandbox on.
 
-- Check the footer's `permission=` value (`--check` also prints `toolPermission` and `agentMode`).
-- If agy needed a permission headless mode cannot grant (for example running a command under `request-review`), it stops: the response may be empty and the footer lists `denied actions`. Report that instead of treating the run as an answer.
-- Before a read task on a repo with uncommitted work, be aware of this; if `permission=always-proceed`, consider telling the user first.
-- After a read-mode run, check `git status`. If there are unexpected changes, tell the user and do not revert them yourself.
+- Since agy 1.5.7 the default Agent Mode is **Auto**, for headless runs too (Default where Auto is unavailable). Auto approves file edits inside the workspace and runs commands in the sandbox, with a reviewer agent for commands that would leave it. So read mode can run commands to investigate, but nothing stops an edit inside the workspace except the prompt instruction.
+- Only `toolPermission: strict` makes agy ask before every edit, even under Auto; headless runs then deny edits, and most commands, as `denied actions`. With the user's `agentMode` set to Default (`""`), `request-review` also blocks edits. With `always-proceed`, nothing does.
+- Check the footer's `permission=` value; `--check` prints `toolPermission` and the effective `agentMode`.
+- If agy needed a permission headless mode cannot grant, it stops: the response may be empty and the footer lists `denied actions`. Report that instead of treating the run as an answer.
+- Before a read task on a repo with uncommitted work, keep this in mind; unless `permission=strict`, consider telling the user first.
+- **After every read-mode run, check `git status`.** If there are unexpected changes, tell the user and do not revert them yourself.
 
 ## Foreground vs background
 
@@ -85,8 +87,8 @@ Exit codes:
 | Code | Meaning | What to do |
 | --- | --- | --- |
 | 0 | OK | Use the answer. |
-| 4 | Partial: `--timeout` was given and expired | The answer is incomplete. Say so; retry with a larger `--timeout`, a narrower prompt, or `--conversation <id>` to continue. |
-| 3 | agy runtime error: quota, model failure, any non-SUCCESS status (e.g. cancelled), or `--json-schema` requested but no structured output | Report the error line. Retryable errors may be retried once; quota errors should not. |
+| 4 | Partial: `--timeout` was given and expired (agy's `finished_reason: print_timeout`; agy 1.5 exits 3 for this, the wrapper still reports 4) | The answer is incomplete. Say so; retry with a larger `--timeout`, a narrower prompt, or `--conversation <id>` to continue. |
+| 3 | agy runtime error: quota, model failure, any non-SUCCESS status (e.g. cancelled, `finished_reason: interrupted` or `error`), or `--json-schema` requested but no structured output | Report the error line. Retryable errors may be retried once; quota errors should not. |
 | 2 | Usage error (wrapper, or passed through from agy) | Fix the command line. |
 | 1 | agy rejected its arguments | Read the message and fix the options. |
 | 126 | agy could not be started | On Windows `.cmd`/`.bat` shims are unsupported; point `AGY_BIN` at `agy.exe`. |

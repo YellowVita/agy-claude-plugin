@@ -7,7 +7,7 @@ It is a model-invocable **skill** plus one thin wrapper script. Claude decides o
 ## Requirements
 
 - Node.js 18.18 or newer
-- `agy` 1.4.0 or newer on `PATH`
+- `agy` 1.4.0 or newer on `PATH` (1.5.8 or newer recommended)
 - Antigravity authentication configured for the selected account or environment
 
 To authenticate, run `agy` in a terminal with an interactive TTY:
@@ -85,15 +85,15 @@ Claude then writes a standalone prompt, runs the wrapper (in the background for 
 
 | Mode | Behavior | When Claude uses it |
 | --- | --- | --- |
-| `read` (default) | Requests read-only behavior: no edit mode, a read-only instruction added to the prompt, and the sandbox. Not enforced unless agy's permission setting is strict (see Permissions). | Always, unless you ask otherwise. |
+| `read` (default) | Requests read-only behavior: agy's default Agent Mode (Auto on agy 1.5.7+), a read-only instruction added to the prompt, and the sandbox. Not enforced unless agy's permission setting is `strict` (see Permissions). | Always, unless you ask otherwise. |
 | `write` | accept-edits: agy may edit files automatically. | Only when you explicitly ask agy to make changes. |
-| `auto` | agy auto mode: autonomous, with a reviewer agent for sandbox escapes. Linux and macOS only. | Only when you explicitly ask for it. |
+| `auto` | agy auto mode: autonomous, with a reviewer agent for sandbox escapes. Linux, macOS, and Windows 11 24H2+. | Only when you explicitly ask for it. |
 
 The agy sandbox is on by default. `--no-sandbox` is used only when a task needs network access or installs and you are fine with that. If agy is blocked by permissions, the wrapper prints a `denied actions` line and Claude reports it instead of silently escalating the mode.
 
 ### Permissions
 
-agy's own permission settings decide what it may do, not the wrapper's mode. If `toolPermission` in `~/.gemini/antigravity-cli/settings.json` is `always-proceed`, agy auto-approves everything, so a read-mode run can still edit files. Read mode is enforced only when `toolPermission` is `request-review` or `strict`. To make read mode strict, set `toolPermission` to `request-review` in agy's settings (see agy's `/permissions` or `/config`). If `toolPermission` is not set, agy uses `request-review`, and the footer shows that. The footer shows `permission=<value>` after each run and `/agy:setup` (`--check`) prints `toolPermission` and `agentMode`, so you can see what is in effect. Claude is told to check this and to report unexpected `git status` changes after a read-mode run.
+agy's own settings decide what it may do, not the wrapper's mode. Read mode does not choose an Agent Mode, so it runs in agy's default: since agy 1.5.7 that is **Auto** (Default where Auto is unavailable). Auto runs commands in the sandbox, checks commands that would leave it with a reviewer agent, and approves file edits inside the workspace, so a read-mode run can investigate freely but can also edit files. Only `toolPermission: strict` (in `~/.gemini/antigravity-cli/settings.json`, or agy's `/permissions` / `/config`) makes agy ask before every edit even under Auto; headless runs then deny edits and most commands. If you set agy's Agent Mode to Default, `request-review` also blocks edits; with `always-proceed`, nothing does. If `toolPermission` is not set, agy uses `request-review`, and the footer shows that. The footer shows `permission=<value>` after each run and `/agy:setup` (`--check`) prints `toolPermission` and `agentMode`, so you can see what is in effect. Claude is told to check this and to report unexpected `git status` changes after a read-mode run.
 
 ## Commands
 
@@ -182,7 +182,7 @@ Job records under `$CLAUDE_PLUGIN_DATA/state` are no longer written or read.
 
 ## Limitations
 
-- agy runs headlessly: permission prompts cannot be answered. What is denied depends on agy's permission setting; read mode is not enforced under `always-proceed` (see Permissions).
+- agy runs headlessly: permission prompts cannot be answered. What is denied depends on agy's permission setting; read mode is not enforced unless `toolPermission` is `strict` (see Permissions).
 - The wrapper starts `agy` with an argv array and `shell: false`, so prompt metacharacters are not evaluated by a shell, but the prompt is passed to agy as a command-line argument and may be visible to local process-inspection tools while `agy` runs, including when read via `--prompt-file`. Do not put secrets in prompts.
 - agy output is model output: Claude is instructed to verify it before presenting it, but you should review anything consequential yourself.
 

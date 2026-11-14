@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.2
+
+Updated for agy 1.5.x, checked against real agy 1.5.8 runs.
+
+- Report `--timeout` expiry as PARTIAL (exit 4) again. Since agy 1.5.0 a print timeout exits 3 with status `ERROR`, which the wrapper reported as a runtime error. The wrapper now trusts agy's `finished_reason: "print_timeout"` (agy 1.4.11+) and keeps the old stderr check for agy 1.4.0–1.4.10. Other `finished_reason` values (`interrupted`, `error`) stay errors.
+- `--check` now shows the effective `agentMode`: an unset value is `auto` on agy 1.5.7+, where Auto became the default Agent Mode for interactive and headless runs.
+- Read mode keeps following agy's default Agent Mode, so on agy 1.5.7+ it runs in Auto: commands run in the sandbox (with a reviewer agent for sandbox escapes) instead of being denied, and edits inside the workspace are auto-approved. The skill, README, and `/agy:setup` now say so: only `toolPermission: strict` blocks edits, and checking `git status` after every read-mode run matters more.
+- `--mode auto` is no longer described as Linux/macOS only; agy supports it on Windows 11 24H2+ since 1.4.4.
+- Recommend agy 1.5.8 or newer, which fixes `--json-schema` follow-ups with `--conversation` that could end without structured output.
+
 ## 0.5.1
 
 Verified against real agy 1.4.2 runs (success, follow-up, timeout, denied actions, schema review).

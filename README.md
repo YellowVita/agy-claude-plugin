@@ -7,7 +7,7 @@ It is a model-invocable **skill** plus one thin wrapper script. Claude decides o
 ## Requirements
 
 - Node.js 18.18 or newer
-- `agy` 1.4.0 or newer on `PATH` (1.5.8 or newer recommended)
+- `agy` 1.4.0 or newer on `PATH` (1.5.12 or newer recommended)
 - Antigravity authentication configured for the selected account or environment
 
 To authenticate, run `agy` in a terminal with an interactive TTY:
@@ -89,7 +89,7 @@ Claude then writes a standalone prompt, runs the wrapper (in the background for 
 | `write` | accept-edits: agy may edit files automatically. | Only when you explicitly ask agy to make changes. |
 | `auto` | agy auto mode: autonomous, with a reviewer agent for sandbox escapes. Linux, macOS, and Windows 11 24H2+. | Only when you explicitly ask for it. |
 
-The agy sandbox is on by default. `--no-sandbox` is used only when a task needs network access or installs and you are fine with that. If agy is blocked by permissions, the wrapper prints a `denied actions` line and Claude reports it instead of silently escalating the mode.
+The agy sandbox is on by default. Since agy 1.5.10 sandboxed commands cannot read `~/.config` (XDG_CONFIG_HOME, `AppData\Roaming` on Windows) or `~/.git-credentials`, apart from common developer tools' settings such as Git, Go, npm, and Python, so tools like `gh` may fail inside it. `--no-sandbox` is used only when a task needs network access or installs and you are fine with that. If agy is blocked by permissions, the wrapper prints a `denied actions` line and Claude reports it instead of silently escalating the mode.
 
 ### Permissions
 

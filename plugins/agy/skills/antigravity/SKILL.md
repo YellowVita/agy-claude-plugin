@@ -36,7 +36,7 @@ For anything longer than a few lines, write the prompt to a file in the scratchp
 | `--mode read` (default) | Asks for read-only behaviour: agy's default Agent Mode (Auto on agy 1.5.7+), a read-only guard added to your prompt, and the sandbox. Use for investigation, review, and second opinions. NOT guaranteed, see "Read mode is a request" below. |
 | `--mode write` | agy may edit files (accept-edits). |
 | `--mode auto` | agy works autonomously with a reviewer agent for sandbox escapes. Linux, macOS, and Windows 11 24H2+. |
-| `--no-sandbox` | Disable agy's sandbox. The sandbox is on by default; since agy 1.5.10 it hides `~/.config` (XDG_CONFIG_HOME) and `~/.git-credentials` from commands, apart from common developer tools' settings (Git, Go, npm, Python). |
+| `--no-sandbox` | Disable agy's sandbox. The sandbox is on by default; since agy 1.5.10 it hides `~/.config` (XDG_CONFIG_HOME; common developer tools' settings such as Git, Go, npm, and Python stay readable) and `~/.git-credentials` from commands. |
 | `--conversation <id>` | Continue an earlier agy conversation. |
 | `--model <m>`, `--effort low\|medium\|high\|xhigh\|max`, `--agent <name>` | Pick model, reasoning effort (agy validates; availability depends on the model), or agent. Omit unless the user asked. |
 | `--add-dir <path>` | Give agy access to an extra directory (repeatable). |
@@ -51,7 +51,7 @@ Relative `--add-dir`, `--json-schema`, and `--prompt-file` paths resolve against
 
 - Use `--mode write` or `--mode auto` ONLY when the user explicitly asked for agy to make changes. Never escalate on your own.
 - Use `--no-sandbox` only when the task truly needs network access or installs, and the user is fine with that.
-- A sandboxed command that fails because it cannot read its config (for example `gh` without `~/.config/gh`) is the sandbox, not a broken tool. Report it; do not switch to `--no-sandbox` without asking.
+- A sandboxed command that fails because it cannot read its config (for example `gh` without `~/.config/gh`) is the sandbox, not a broken tool. Report it and suggest the user allow that path in agy's sandbox rules. A config read alone is not a reason for `--no-sandbox`.
 - If the footer shows `denied actions`, agy was blocked by permissions. Report what it tried to do. Do not silently rerun with a broader mode; ask the user first.
 
 ### Read mode is a request, not a guarantee
@@ -72,7 +72,7 @@ The wrapper prints nothing until agy finishes, and Bash kills foreground command
 - Default to `run_in_background: true` for anything non-trivial. You are notified when it finishes; read the output then. Give each job a distinct `description`. Do not poll or sleep.
 - For a short foreground run, pass Bash `timeout: 600000` and wrapper `--timeout 9m`, so the wrapper returns `PARTIAL` instead of being killed with no output.
 - Cancel a background job with TaskStop; the wrapper then terminates agy's whole process tree.
-- agy may take longer than the work suggests: since agy 1.5.10 it waits up to 4 minutes on rate limits and up to 10 minutes on a silent high-effort response before giving up, and it can fan work out to subagents. Do not set a tight `--timeout` unless you need the answer quickly.
+- agy may take longer than the work suggests: since agy 1.5.10 it waits and retries rate limits of up to 4 minutes, waits up to 10 minutes on a silent high-effort response before treating it as stalled and retrying, and it can fan work out to subagents. So a foreground `--timeout 9m` run can end `PARTIAL`; for anything beyond a quick question, prefer `run_in_background` with no `--timeout` or a generous one.
 
 ## Reading the result
 

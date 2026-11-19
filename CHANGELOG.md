@@ -4,9 +4,9 @@
 
 Checked against real agy 1.5.12 runs (read mode with `--json-schema`, `--timeout` expiry). No wrapper changes were needed.
 
-- Recommend agy 1.5.12 or newer. agy 1.5.10 waits and retries rate limits of up to 4 minutes instead of ending the turn, and waits up to 10 minutes for a silent high-effort response; agy 1.5.12 retries brief connection failures. Fewer headless runs end in exit 3.
-- Document that agy 1.5.10's sandbox hides `~/.config` and `~/.git-credentials` from commands (common developer tools' settings excepted), so tools such as `gh` may fail in read mode, and tell Claude not to switch to `--no-sandbox` on its own because of it.
-- Tell Claude that agy runs can take longer (rate-limit waits, subagent fan-out with `run_workflow` since agy 1.5.9), so it avoids tight `--timeout` values, and that quota errors end the turn immediately since agy 1.5.10.
+- Recommend agy 1.5.12 or newer. agy 1.5.10 waits and retries rate limits of up to 4 minutes instead of ending the turn, and agy 1.5.12 retries brief connection failures, so fewer headless runs end in exit 3. agy 1.5.10 also waits up to 10 minutes before restarting a silent high-effort response.
+- Document that agy 1.5.10's sandbox hides `~/.config` and `~/.git-credentials` from commands (common developer tools' settings stay readable), so tools such as `gh` may fail in read mode. Claude suggests allowing the path in agy's sandbox rules instead of using `--no-sandbox`.
+- Tell Claude that agy runs can take longer (rate-limit waits, subagent fan-out with `run_workflow`, available to everyone since agy 1.5.9), so it prefers background runs over a tight `--timeout`, and that spend-cap, prepaid-balance, and weekly quota errors end the turn at once since agy 1.5.10.
 
 ## 0.5.2
 

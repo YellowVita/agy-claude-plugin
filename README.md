@@ -7,7 +7,7 @@ It is a model-invocable **skill** plus one thin wrapper script. Claude decides o
 ## Requirements
 
 - Node.js 18.18 or newer
-- `agy` 1.4.0 or newer on `PATH` (1.5.12 or newer recommended)
+- `agy` 1.4.0 or newer on `PATH` (1.5.17 or newer recommended)
 - Antigravity authentication configured for the selected account or environment
 
 To authenticate, run `agy` in a terminal with an interactive TTY:
@@ -93,7 +93,7 @@ The agy sandbox is on by default. Since agy 1.5.10 sandboxed commands cannot rea
 
 ### Permissions
 
-agy's own settings decide what it may do, not the wrapper's mode. Read mode does not choose an Agent Mode, so it runs in agy's default: since agy 1.5.7 that is **Auto** (Default where Auto is unavailable). Auto runs commands in the sandbox, checks commands that would leave it with a reviewer agent, and approves file edits inside the workspace, so a read-mode run can investigate freely but can also edit files. Only `toolPermission: strict` (in `~/.gemini/antigravity-cli/settings.json`, or agy's `/permissions` / `/config`) makes agy ask before every edit even under Auto; headless runs then deny edits and most commands. If you set agy's Agent Mode to Default, `request-review` also blocks edits; with `always-proceed`, nothing does. If `toolPermission` is not set, agy uses `request-review`, and the footer shows that. The footer shows `permission=<value>` after each run and `/agy:setup` (`--check`) prints `toolPermission` and `agentMode`, so you can see what is in effect. Claude is told to check this and to report unexpected `git status` changes after a read-mode run.
+agy's own settings decide what it may do, not the wrapper's mode. Read mode does not choose an Agent Mode, so it runs in agy's default: since agy 1.5.7 that is **Auto** (Default where Auto is unavailable). Auto runs commands in the sandbox, checks commands that would leave it with a reviewer agent, and approves file edits inside the workspace, so a read-mode run can investigate freely but can also edit files. Auto also reaches outside the workspace: since agy 1.5.14 it reads files there without asking, and since agy 1.5.16 it creates or edits files there without asking when they are in a version-controlled repository (Git, Jujutsu, Mercurial) or the change only adds content (hidden paths, `.git` and hook metadata, and system folders still ask). Only `toolPermission: strict` (in `~/.gemini/antigravity-cli/settings.json`, or agy's `/permissions` / `/config`) makes agy ask before every edit even under Auto; headless runs then deny edits and most commands. If you set agy's Agent Mode to Default, `request-review` also blocks edits; with `always-proceed`, nothing does. If `toolPermission` is not set, agy uses `request-review`, and the footer shows that. The footer shows `permission=<value>` after each run and `/agy:setup` (`--check`) prints `toolPermission` and `agentMode`, so you can see what is in effect. Claude is told to check this and to report unexpected `git status` changes after a read-mode run, in the workspace and in any `--add-dir` directory or other repository the task involved. agy's output does not list changed files, so edits elsewhere can go unnoticed; set `toolPermission: strict` if that matters.
 
 ## Commands
 

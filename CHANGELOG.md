@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.4
+
+Checked against real agy 1.5.17 runs (read mode, `--json-schema`, `--timeout` expiry). No wrapper changes were needed.
+
+- Recommend agy 1.5.17 or newer. Before agy 1.5.13, a run that succeeded after agy retried a model request still reported `status: ERROR` in its JSON output, so the wrapper reported it as a runtime error (exit 3). agy 1.5.17 also refreshes Google OAuth tokens during turns longer than an hour instead of failing with `401`, and resumes a multi-part response after a `503` capacity error instead of restarting it.
+- Document that Auto mode, which read mode runs in by default, reaches outside the workspace: since agy 1.5.14 it reads files there without asking, and since agy 1.5.16 it creates or edits files there without asking when they are in a version-controlled repository or the change only adds content.
+- Claude now checks `git status` after a read-mode run in the workspace and in any `--add-dir` directory or other repository the task involved, notes that agy's output does not list changed files, and suggests `toolPermission: strict` for tasks that touch other repositories or sensitive files. `/agy:review` and `/agy:setup` say the same.
+
 ## 0.5.3
 
 Checked against real agy 1.5.12 runs (read mode with `--json-schema`, `--timeout` expiry). No wrapper changes were needed.
